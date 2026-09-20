@@ -1,0 +1,117 @@
+RELATORIO DA FASE 1 - FUNDACAO DETERMINISTICA
+Projeto: shopee-affiliate-agent
+Repositorio: araujosdeveloper/shopee-affiliate-agent
+Branch: feat/foundation
+PR: https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/1
+Data: 2026-09-20
+
+1. RESUMO EXECUTIVO
+
+A fundacao foi alinhada a especificacao mestre sem iniciar integracoes externas, scraping, interface web ou publicacao automatica.
+
+A branch feat/foundation foi publicada com worktree limpo. A PR permanece aberta como draft e todos os checks finais do GitHub Actions foram aprovados.
+
+2. CORRECOES REALIZADAS
+
+- Removido o parametro configuravel de validade de snapshot no dominio.
+- Politica de validade centralizada em 60 minutos.
+- Snapshots passaram a registrar a origem autorizada do dado.
+- Aprovacoes passaram a registrar a versao exata do conteudo analisado.
+- O PostgreSQL valida aprovacao humana, versao atual do conteudo, origem do snapshot, disponibilidade, validade e bloqueio de publicacao automatica.
+- O alvo make test passou a executar pytest tests/unit.
+- Docker Compose passou a aceitar arquivos temporarios via APP_ENV_FILE.
+- Documentacao atualizada para refletir a politica fixa de validade.
+
+3. MIGRATIONS
+
+Migration criada:
+- migrations/versions/20260920_0003_snapshot_provenance.py
+
+Migration atualizada:
+- migrations/versions/20260920_0001_initial_foundation.py
+
+Validacoes realizadas:
+- criacao de banco vazio ate head;
+- downgrade completo ate base;
+- novo upgrade ate head;
+- upgrade do banco ativo existente ate 20260920_0003.
+
+4. TESTES
+
+Resultado final: 35 testes aprovados.
+
+- 20 testes unitarios;
+- 5 testes de integracao executados no container de testes;
+- autenticacao;
+- readiness;
+- indisponibilidade do Redis;
+- auditoria append-only;
+- snapshot exatamente no limite permitido;
+- snapshot expirado;
+- snapshot futuro;
+- publicacao sem aprovacao;
+- publicacao automatica;
+- publicacao com aprovacao incompativel;
+- origem do snapshot;
+- versionamento da aprovacao.
+
+Foram observados somente 2 avisos de depreciacao do TestClient, sem falha.
+
+5. QUALIDADE E SEGURANCA
+
+- Ruff: aprovado.
+- Mypy strict: aprovado em 20 arquivos.
+- pip-audit: nenhuma vulnerabilidade conhecida.
+- Gitleaks: aprovado.
+- Docker Compose config: aprovado.
+- Build completo: aprovado.
+- Backup PostgreSQL: aprovado.
+- Restore isolado: aprovado.
+
+6. CONTAINERS E ISOLAMENTO
+
+Todos os containers ficaram saudaveis:
+
+- API: aproximadamente 63 MiB de 384 MiB.
+- Worker: aproximadamente 56 MiB de 512 MiB.
+- PostgreSQL: aproximadamente 23 MiB de 768 MiB.
+- Redis: aproximadamente 4 MiB de 128 MiB.
+
+Nenhuma porta foi publicada no host. Foram utilizados somente recursos do projeto, com redes e volumes isolados. Nenhum outro projeto foi alterado.
+
+7. COMMITS PUBLICADOS
+
+- 902a0be - db: preserve snapshot provenance and approval versions
+- cda7312 - compliance: enforce current publication evidence
+- 7261947 - ops: support isolated temporary environments
+
+8. CI E PULL REQUEST
+
+Workflow final aprovado:
+https://github.com/araujosdeveloper/shopee-affiliate-agent/actions/runs/35531616413
+
+Pull Request draft:
+https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/1
+
+A PR continua aberta, em modo draft, com base main. Nenhum merge foi realizado. Nao houve force push e o historico de main nao foi reescrito.
+
+9. RISCOS RESIDUAIS
+
+- O Bearer token ainda e unico e provisorio, conforme previsto para a Fundacao.
+- Interface web, RBAC completo e integracoes oficiais permanecem para fases futuras.
+- Permanecem avisos de depreciacao do runtime de testes, sem impacto funcional.
+
+10. COMANDOS PARA AUDITORIA INDEPENDENTE
+
+cd /opt/shopee-affiliate-agent
+git status --short --branch
+docker compose config --quiet
+docker compose build
+docker compose up -d --wait
+docker compose --profile test run --rm test pytest -p no:cacheprovider
+docker run --rm shopee-affiliate-agent-test:0.1.0 ruff check .
+docker run --rm shopee-affiliate-agent-test:0.1.0 mypy
+docker run --rm shopee-affiliate-agent-test:0.1.0 pip-audit
+./scripts/check-readiness-failure.sh
+backup="$(./scripts/backup.sh /tmp/shopee-backups)"
+./scripts/restore-test.sh "$backup"
