@@ -1,0 +1,178 @@
+name: shopee-affiliate-agent
+
+x-app-common: &app-common
+  image: shopee-affiliate-agent:0.1.0
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+  env_file: .env
+  networks:
+    - shopee_core
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=32m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  postgres:
+    image: postgres:16.10-alpine3.22
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_MIGRATION_USER: ${POSTGRES_MIGRATION_USER}
+      POSTGRES_MIGRATION_PASSWORD: ${POSTGRES_MIGRATION_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/10-init-db.sh:ro
+    networks:
+      - shopee_core
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    init: true
+    shm_size: 64m
+    mem_limit: 768m
+    cpus: 0.50
+    # Official PostgreSQL entrypoint needs setuid/chown during initialization.
+    # Its data directory remains isolated in a project-owned named volume.
+
+  redis:
+    image: redis:7.4.2-alpine3.21
+    env_file: .env
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\" --maxmemory 96mb --maxmemory-policy noeviction"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - shopee_core
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$${REDIS_PASSWORD} redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+    init: true
+    mem_limit: 128m
+    cpus: 0.20
+    # Official Redis entrypoint needs chown on the project-owned data volume.
+
+  migrate:
+    <<: *app-common
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    networks:
+      - shopee_core
+      - shopee_ops
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 384m
+    cpus: 0.50
+
+  api:
+    <<: *app-common
+    command: ["uvicorn", "shopee_affiliate_agent.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.50
+
+  worker:
+    <<: *app-common
+    command: ["celery", "-A", "shopee_affiliate_agent.worker:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--without-gossip", "--without-mingle"]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A shopee_affiliate_agent.worker:celery_app inspect ping --timeout 3 --destination celery@$${HOSTNAME} | grep -q pong"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.50
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    image: shopee-affiliate-agent-test:0.1.0
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    networks:
+      - shopee_core
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    profiles: ["test"]
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 0.50
+
+volumes:
+  postgres_data:
+    name: shopee_affiliate_agent_postgres_data
+  redis_data:
+    name: shopee_affiliate_agent_redis_data
+
+networks:
+  shopee_core:
+    name: shopee_core
+    internal: true
+  shopee_ops:
+    name: shopee_ops
+    internal: true
