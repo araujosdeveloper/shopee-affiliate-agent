@@ -19,13 +19,15 @@ A branch feat/foundation foi publicada com worktree limpo. A PR permanece aberta
 - Aprovacoes passaram a registrar a versao exata do conteudo analisado.
 - O PostgreSQL valida aprovacao humana, versao atual do conteudo, origem do snapshot, disponibilidade, validade e bloqueio de publicacao automatica.
 - O alvo make test passou a executar pytest tests/unit.
+- O alvo make test-integration executa a suíte PostgreSQL/Redis em container.
 - Docker Compose passou a aceitar arquivos temporarios via APP_ENV_FILE.
 - Documentacao atualizada para refletir a politica fixa de validade.
 
 3. MIGRATIONS
 
-Migration criada:
+Migrations criadas:
 - migrations/versions/20260920_0003_snapshot_provenance.py
+- migrations/versions/20260920_0004_publication_product_guards.py
 
 Migration atualizada:
 - migrations/versions/20260920_0001_initial_foundation.py
@@ -34,13 +36,16 @@ Validacoes realizadas:
 - criacao de banco vazio ate head;
 - downgrade completo ate base;
 - novo upgrade ate head;
-- upgrade do banco ativo existente ate 20260920_0003.
+- upgrade do banco ativo existente ate 20260920_0004;
+- validacao da fronteira 0002 -> 0003 -> 0002 -> 0003 -> 0004;
+- downgrade completo e novo upgrade completo.
+- operação de publicação compatível validada no schema 0002 após downgrade de 0003.
 
 4. TESTES
 
 Resultado final: 35 testes aprovados.
 
-- 20 testes unitarios;
+- 30 testes unitarios;
 - 5 testes de integracao executados no container de testes;
 - autenticacao;
 - readiness;
@@ -52,6 +57,9 @@ Resultado final: 35 testes aprovados.
 - publicacao sem aprovacao;
 - publicacao automatica;
 - publicacao com aprovacao incompativel;
+- conteudo e snapshot de produtos diferentes, mesmo com a mesma origem;
+- snapshot futuro rejeitado diretamente pelo PostgreSQL;
+- publicacao valida com conteudo, aprovacao e snapshot relacionados;
 - origem do snapshot;
 - versionamento da aprovacao.
 
@@ -84,6 +92,8 @@ Nenhuma porta foi publicada no host. Foram utilizados somente recursos do projet
 - 902a0be - db: preserve snapshot provenance and approval versions
 - cda7312 - compliance: enforce current publication evidence
 - 7261947 - ops: support isolated temporary environments
+- 5ef1d33 - docs: add foundation execution report
+- d235e2f - db: enforce publication product ownership guards
 
 8. CI E PULL REQUEST
 
@@ -109,6 +119,7 @@ docker compose config --quiet
 docker compose build
 docker compose up -d --wait
 docker compose --profile test run --rm test pytest -p no:cacheprovider
+make test-integration
 docker run --rm shopee-affiliate-agent-test:0.1.0 ruff check .
 docker run --rm shopee-affiliate-agent-test:0.1.0 mypy
 docker run --rm shopee-affiliate-agent-test:0.1.0 pip-audit
