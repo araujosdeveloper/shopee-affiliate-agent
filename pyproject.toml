@@ -48,6 +48,9 @@ line-length = 100
 select = ["E", "F", "I", "B", "UP", "S", "RUF"]
 ignore = ["S101"]
 
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

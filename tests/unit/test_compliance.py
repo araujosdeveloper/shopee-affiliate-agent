@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 from shopee_affiliate_agent.domain.compliance import (
+    PRICE_VALIDATION_MAX_AGE,
     ComplianceViolation,
     PublicationEvidence,
     validate_content_claims,
@@ -46,6 +47,12 @@ def test_valid_publication_evidence() -> None:
     validate_publication(valid_evidence(now), now=now)
 
 
+def test_snapshot_at_exact_policy_limit_is_valid() -> None:
+    now = datetime.now(UTC)
+    evidence = PublicationEvidence(True, now - PRICE_VALIDATION_MAX_AGE, True)
+    validate_publication(evidence, now=now)
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
@@ -65,6 +72,8 @@ def test_rejects_non_compliant_publication(changes: dict[str, bool], message: st
 
 def test_rejects_stale_snapshot() -> None:
     now = datetime.now(UTC)
-    evidence = PublicationEvidence(True, now - timedelta(minutes=61), True)
+    evidence = PublicationEvidence(
+        True, now - PRICE_VALIDATION_MAX_AGE - timedelta(seconds=1), True
+    )
     with pytest.raises(ComplianceViolation, match="stale"):
         validate_publication(evidence, now=now)

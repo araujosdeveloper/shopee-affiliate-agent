@@ -4,6 +4,8 @@ from decimal import Decimal
 
 from shopee_affiliate_agent.domain.enums import ProductSource
 
+PRICE_VALIDATION_MAX_AGE = timedelta(minutes=60)
+
 
 class ComplianceViolation(ValueError):
     """Raised when a non-negotiable compliance rule is violated."""
@@ -50,7 +52,7 @@ def validate_publication(
     evidence: PublicationEvidence,
     *,
     now: datetime | None = None,
-    max_snapshot_age: timedelta = timedelta(minutes=60),
+    max_snapshot_age: timedelta = PRICE_VALIDATION_MAX_AGE,
 ) -> None:
     current_time = now or datetime.now(UTC)
     if not evidence.approved_by_human:

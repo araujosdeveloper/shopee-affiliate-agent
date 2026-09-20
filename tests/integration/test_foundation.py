@@ -8,6 +8,7 @@ from sqlalchemy.exc import DBAPIError
 
 from shopee_affiliate_agent.core.config import get_settings
 from shopee_affiliate_agent.db.session import SessionFactory
+from shopee_affiliate_agent.domain.compliance import PRICE_VALIDATION_MAX_AGE
 from shopee_affiliate_agent.main import app
 
 pytestmark = pytest.mark.integration
@@ -55,3 +56,25 @@ def test_audit_events_are_append_only_for_application_user() -> None:
         with pytest.raises(DBAPIError):
             session.execute(text("DELETE FROM audit_events WHERE id = :id"), {"id": event_id})
             session.commit()
+        session.rollback()
+        session.execute(
+            text(
+                """INSERT INTO audit_events
+                (id, occurred_at, event_type, entity_type, event_data, idempotency_key)
+                VALUES (:id, :occurred_at, 'test.truncate', 'test', '{}', :key)"""
+            ),
+            {"id": uuid4(), "occurred_at": datetime.now(UTC), "key": f"truncate-{event_id}"},
+        )
+        session.commit()
+        with pytest.raises(DBAPIError):
+            session.execute(text("TRUNCATE audit_events"))
+            session.commit()
+
+
+def test_application_and_database_use_the_same_price_policy() -> None:
+    assert PRICE_VALIDATION_MAX_AGE.total_seconds() == 60 * 60
+    with SessionFactory() as session:
+        definition = session.execute(
+            text("SELECT pg_get_functiondef('validate_publication_compliance()'::regprocedure)")
+        ).scalar_one()
+    assert "interval '60 minutes'" in definition
