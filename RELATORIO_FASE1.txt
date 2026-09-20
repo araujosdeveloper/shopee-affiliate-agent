@@ -4,7 +4,7 @@ Repositorio: araujosdeveloper/shopee-affiliate-agent
 Branch: feat/foundation
 PR: https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/1
 Data: 2026-09-20
-Commit head desta entrega: cf0f9ff
+Commits desta correção publicados: d235e2f, cf0f9ff e e88a6f0.
 
 1. RESUMO EXECUTIVO
 
@@ -99,7 +99,7 @@ Nenhuma porta foi publicada no host. Foram utilizados somente recursos do projet
 8. CI E PULL REQUEST
 
 Workflow final aprovado:
-https://github.com/araujosdeveloper/shopee-affiliate-agent/actions/runs/35533654392
+https://github.com/araujosdeveloper/shopee-affiliate-agent/actions/runs/35533895183
 
 Pull Request draft:
 https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/1
