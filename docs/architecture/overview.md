@@ -4,4 +4,6 @@ A Fase 1 é deliberadamente fechada. API e worker compartilham apenas a rede int
 
 O FastAPI expõe liveness, readiness e status interno. O worker Celery tem concorrência 1, serialização JSON e nenhuma tarefa de integração. O PostgreSQL mantém o estado transacional e a trilha append-only; o Redis atende broker, backend e readiness. A migração executa com credencial separada da aplicação.
 
+Snapshots preservam a origem autorizada do dado e as aprovações registram a versão exata do conteúdo analisado. A autorização de publicação verifica essas relações no domínio e no banco; alterar o conteúdo depois da aprovação invalida a decisão anterior.
+
 As fronteiras de domínio impedem scraping, fontes desconhecidas, preços sem instante de coleta, alegações inventadas, publicação sem aprovação humana e snapshot recente, disparo em massa, redirecionamento automático e compra pelo próprio link. O banco repete invariantes críticos para defesa em profundidade.

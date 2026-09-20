@@ -21,6 +21,7 @@ x-app-common: &app-common
 services:
   postgres:
     image: postgres:16.10-alpine3.22
+    env_file: ${APP_ENV_FILE:-.env}
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_ADMIN_USER}
@@ -138,7 +139,7 @@ services:
       dockerfile: Dockerfile
       target: test
     image: shopee-affiliate-agent-test:0.1.0
-    env_file: .env
+    env_file: ${APP_ENV_FILE:-.env}
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis

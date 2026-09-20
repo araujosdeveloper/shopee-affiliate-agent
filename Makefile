@@ -9,7 +9,7 @@ format:
 typecheck:
 	mypy
 test:
-	pytest -m 'not integration'
+	pytest tests/unit
 audit:
 	pip-audit
 compose-config:
