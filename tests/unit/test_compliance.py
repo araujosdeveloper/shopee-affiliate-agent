@@ -77,3 +77,10 @@ def test_rejects_stale_snapshot() -> None:
     )
     with pytest.raises(ComplianceViolation, match="stale"):
         validate_publication(evidence, now=now)
+
+
+def test_rejects_future_snapshot() -> None:
+    now = datetime.now(UTC)
+    evidence = PublicationEvidence(True, now + timedelta(seconds=1), True)
+    with pytest.raises(ComplianceViolation, match="future"):
+        validate_publication(evidence, now=now)

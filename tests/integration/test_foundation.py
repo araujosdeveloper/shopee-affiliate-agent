@@ -78,3 +78,166 @@ def test_application_and_database_use_the_same_price_policy() -> None:
             text("SELECT pg_get_functiondef('validate_publication_compliance()'::regprocedure)")
         ).scalar_one()
     assert "interval '60 minutes'" in definition
+
+
+def test_snapshot_provenance_and_approval_version_columns_exist() -> None:
+    with SessionFactory() as session:
+        columns = session.execute(
+            text(
+                """
+                SELECT table_name, column_name
+                FROM information_schema.columns
+                WHERE (table_name, column_name) IN (
+                    ('product_snapshots', 'source'),
+                    ('approval_requests', 'content_version')
+                )
+                """
+            )
+        ).all()
+    assert set(columns) == {
+        ("product_snapshots", "source"),
+        ("approval_requests", "content_version"),
+    }
+
+
+def test_database_blocks_publication_without_current_compliant_evidence() -> None:
+    product_id = uuid4()
+    snapshot_id = uuid4()
+    operator_id = uuid4()
+    channel_id = uuid4()
+    content_id = uuid4()
+    approval_id = uuid4()
+
+    with SessionFactory() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO operators
+                    (id, email, display_name, role, is_active, version, created_at, updated_at)
+                VALUES (:id, :email, 'Integration Operator', 'admin', true, 1, now(), now())
+                """
+            ),
+            {"id": operator_id, "email": f"{operator_id}@example.test"},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO products
+                    (id, source, external_id, title, is_active, version, created_at, updated_at)
+                VALUES (:id, 'manual', :external_id, 'Integration Product', true, 1, now(), now())
+                """
+            ),
+            {"id": product_id, "external_id": str(product_id)},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO product_snapshots
+                    (id, product_id, source, price, available, collected_at, idempotency_key,
+                     currency, created_at, updated_at)
+                VALUES (:id, :product_id, 'manual', 10.00, true, :collected_at, :key,
+                        'BRL', now(), now())
+                """
+            ),
+            {
+                "id": snapshot_id,
+                "product_id": product_id,
+                "collected_at": datetime.now(UTC),
+                "key": f"snapshot-{snapshot_id}",
+            },
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO media_channels
+                    (id, channel_type, external_reference, display_name, is_active,
+                     version, created_at, updated_at)
+                VALUES (:id, 'social', :external_reference, 'Integration Channel', true,
+                        1, now(), now())
+                """
+            ),
+            {"id": channel_id, "external_reference": str(channel_id)},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO content_items
+                    (id, product_id, title, body, status, claim_types, idempotency_key,
+                     version, created_at, updated_at)
+                VALUES (:id, :product_id, 'Title', 'Body', 'approved', '[]', :key, 1, now(), now())
+                """
+            ),
+            {"id": content_id, "product_id": product_id, "key": f"content-{content_id}"},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO approval_requests
+                    (id, content_item_id, content_version, requested_by_id, reviewer_id, status,
+                     reviewed_at, idempotency_key, version, created_at, updated_at)
+                VALUES (:id, :content_id, 1, :operator_id, :operator_id, 'pending', now(), :key,
+                        1, now(), now())
+                """
+            ),
+            {
+                "id": approval_id,
+                "content_id": content_id,
+                "operator_id": operator_id,
+                "key": f"approval-{approval_id}",
+            },
+        )
+        session.commit()
+
+        def insert_publication(*, is_automatic: bool, key: str) -> None:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO publications
+                        (id, content_item_id, media_channel_id, approval_request_id,
+                         product_snapshot_id, status, is_automatic, idempotency_key,
+                         created_at, updated_at)
+                    VALUES (:id, :content_id, :channel_id, :approval_id, :snapshot_id,
+                            'pending', :is_automatic, :key, now(), now())
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "content_id": content_id,
+                    "channel_id": channel_id,
+                    "approval_id": approval_id,
+                    "snapshot_id": snapshot_id,
+                    "is_automatic": is_automatic,
+                    "key": key,
+                },
+            )
+            session.commit()
+
+        with pytest.raises(DBAPIError):
+            insert_publication(is_automatic=False, key=f"pending-{uuid4()}")
+        session.rollback()
+        session.execute(
+            text("UPDATE approval_requests SET status = 'approved' WHERE id = :id"),
+            {"id": approval_id},
+        )
+        session.commit()
+        with pytest.raises(DBAPIError):
+            insert_publication(is_automatic=True, key=f"automatic-{uuid4()}")
+        session.rollback()
+        session.execute(
+            text("UPDATE product_snapshots SET collected_at = :collected_at WHERE id = :id"),
+            {"id": snapshot_id, "collected_at": datetime.now(UTC) - PRICE_VALIDATION_MAX_AGE},
+        )
+        session.commit()
+        with pytest.raises(DBAPIError):
+            insert_publication(is_automatic=False, key=f"expired-{uuid4()}")
+        session.rollback()
+        session.execute(
+            text("UPDATE product_snapshots SET collected_at = now() WHERE id = :id"),
+            {"id": snapshot_id},
+        )
+        session.execute(
+            text("UPDATE content_items SET version = 2 WHERE id = :id"), {"id": content_id}
+        )
+        session.commit()
+        with pytest.raises(DBAPIError):
+            insert_publication(is_automatic=False, key=f"version-{uuid4()}")

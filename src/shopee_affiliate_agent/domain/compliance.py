@@ -52,14 +52,15 @@ def validate_publication(
     evidence: PublicationEvidence,
     *,
     now: datetime | None = None,
-    max_snapshot_age: timedelta = PRICE_VALIDATION_MAX_AGE,
 ) -> None:
     current_time = now or datetime.now(UTC)
     if not evidence.approved_by_human:
         raise ComplianceViolation("human approval is required")
     if evidence.snapshot_collected_at.tzinfo is None:
         raise ComplianceViolation("snapshot timestamp must be timezone-aware")
-    if current_time - evidence.snapshot_collected_at > max_snapshot_age:
+    if evidence.snapshot_collected_at > current_time:
+        raise ComplianceViolation("snapshot timestamp cannot be in the future")
+    if current_time - evidence.snapshot_collected_at > PRICE_VALIDATION_MAX_AGE:
         raise ComplianceViolation("price and availability validation is stale")
     if not evidence.available:
         raise ComplianceViolation("product is unavailable")
