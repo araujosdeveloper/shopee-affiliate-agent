@@ -1,4 +1,4 @@
-name: shopee-affiliate-agent
+name: ${COMPOSE_PROJECT_NAME:-shopee-affiliate-agent}
 
 x-app-common: &app-common
   image: shopee-affiliate-agent:0.1.0
@@ -6,7 +6,7 @@ x-app-common: &app-common
     context: .
     dockerfile: Dockerfile
     target: runtime
-  env_file: .env
+  env_file: ${APP_ENV_FILE:-.env}
   networks:
     - shopee_core
   init: true
@@ -52,7 +52,7 @@ services:
 
   redis:
     image: redis:7.4.2-alpine3.21
-    env_file: .env
+    env_file: ${APP_ENV_FILE:-.env}
     command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\" --maxmemory 96mb --maxmemory-policy noeviction"]
     volumes:
       - redis_data:/data
@@ -165,14 +165,14 @@ services:
 
 volumes:
   postgres_data:
-    name: shopee_affiliate_agent_postgres_data
+    name: ${VOLUME_NAMESPACE:-shopee_affiliate_agent}_postgres_data
   redis_data:
-    name: shopee_affiliate_agent_redis_data
+    name: ${VOLUME_NAMESPACE:-shopee_affiliate_agent}_redis_data
 
 networks:
   shopee_core:
-    name: shopee_core
+    name: ${NETWORK_NAMESPACE:-shopee}_core
     internal: true
   shopee_ops:
-    name: shopee_ops
+    name: ${NETWORK_NAMESPACE:-shopee}_ops
     internal: true

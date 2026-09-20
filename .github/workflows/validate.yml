@@ -2,14 +2,16 @@ name: validate
 
 on:
   pull_request:
+    branches: [main]
   push:
-    branches: [feat/foundation]
+    branches: [main, feat/foundation]
 
 permissions:
   contents: read
 
 jobs:
-  validate:
+  quality:
+    name: quality-and-unit-tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -23,13 +25,35 @@ jobs:
       - run: python -m pip install -e '.[dev]'
       - run: ruff check .
       - run: mypy
-      - run: pytest -m 'not integration'
+      - run: pytest tests/unit
       - run: pip-audit
       - name: Secret scanning
         uses: gitleaks/gitleaks-action@v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compose validation
-        run: cp .env.example .env && docker compose config --quiet
-      - name: Container build
+  containers:
+    name: containers-and-integration
+    runs-on: ubuntu-24.04
+    env:
+      COMPOSE_PROJECT_NAME: shopee-affiliate-agent-ci-${{ github.run_id }}
+      NETWORK_NAMESPACE: shopee-ci-${{ github.run_id }}
+      VOLUME_NAMESPACE: shopee-ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate temporary environment
+        run: ./scripts/generate-env.sh
+      - name: Validate Compose
+        run: docker compose config --quiet
+      - name: Build containers
         run: docker compose build
+      - name: Start isolated stack
+        run: docker compose up -d --wait
+      - name: Run integration tests
+        run: docker compose --profile test run --rm test pytest -p no:cacheprovider
+      - name: Cleanup runner resources
+        if: always()
+        run: |
+          docker compose down --volumes --remove-orphans || true
+          rm -f .env

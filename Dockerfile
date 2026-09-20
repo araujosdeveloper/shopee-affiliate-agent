@@ -37,4 +37,6 @@ COPY pyproject.toml README.md ./
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY tests ./tests
+COPY src ./src
+RUN /opt/venv/bin/ruff check --fix .
 CMD ["pytest"]

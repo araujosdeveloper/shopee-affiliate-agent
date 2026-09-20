@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 
-if [ -e .env ]; then
-  echo ".env already exists; refusing to overwrite" >&2
+output_file=${1:-.env}
+if [ -e "$output_file" ]; then
+  echo "$output_file already exists; refusing to overwrite" >&2
   exit 1
 fi
 
@@ -23,7 +24,6 @@ random_secret() { openssl rand -base64 48 | tr -d '\n'; }
     'BUSINESS_TIMEZONE=America/Sao_Paulo' \
     'AUTO_PUBLICATION_ENABLED=false' \
     'HUMAN_APPROVAL_REQUIRED=true' \
-    'PRICE_VALIDATION_MAX_AGE_MINUTES=60' \
     'SCORE_WEIGHT_CONVERSION_POTENTIAL=30' \
     'SCORE_WEIGHT_NET_COMMISSION=20' \
     'SCORE_WEIGHT_PRODUCT_QUALITY=15' \
@@ -31,6 +31,6 @@ random_secret() { openssl rand -base64 48 | tr -d '\n'; }
     'SCORE_WEIGHT_NICHE_FIT=10' \
     'SCORE_WEIGHT_VIDEO_DEMONSTRATION_POTENTIAL=10' \
     'SCORE_WEIGHT_CANCELLATION_QUALITY=5'
-} > .env
+} > "$output_file"
 
-echo "Created .env with mode 0600"
+echo "Created $output_file with mode 0600"
