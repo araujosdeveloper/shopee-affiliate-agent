@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shopee-affiliate-agent"
+version = "0.1.0"
+description = "Deterministic foundation for compliant affiliate content operations"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+  "alembic==1.16.5",
+  "celery[redis]==5.5.3",
+  "fastapi==0.141.1",
+  "psycopg[binary]==3.2.10",
+  "pydantic-settings==2.10.1",
+  "python-json-logger==3.3.0",
+  "redis==5.2.1",
+  "starlette==1.6.0",
+  "sqlalchemy==2.0.43",
+  "uvicorn[standard]==0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx==0.28.1",
+  "mypy==1.17.1",
+  "pip-audit==2.9.0",
+  "pytest==9.1.1",
+  "pytest-cov==6.2.1",
+  "ruff==0.12.11",
+  "types-redis==4.6.0.20241004",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shopee_affiliate_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --disable-warnings"
+markers = ["integration: tests requiring PostgreSQL and Redis"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "RUF"]
+ignore = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["shopee_affiliate_agent"]
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["celery.*"]
+ignore_missing_imports = true
