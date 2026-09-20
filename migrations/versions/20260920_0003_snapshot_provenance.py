@@ -53,16 +53,18 @@ def upgrade() -> None:
             DECLARE snapshot_source product_source;
             DECLARE product_source_value product_source;
             BEGIN
-                SELECT status, content_version INTO approval_state, approval_version
-                FROM approval_requests
-                WHERE id = NEW.approval_request_id AND content_item_id = NEW.content_item_id;
-                SELECT version INTO content_version
-                FROM content_items WHERE id = NEW.content_item_id;
-                SELECT available, collected_at, source INTO snapshot_available, snapshot_time, snapshot_source
-                FROM product_snapshots WHERE id = NEW.product_snapshot_id;
-                SELECT source INTO product_source_value
-                FROM products
-                WHERE id = (SELECT product_id FROM product_snapshots WHERE id = NEW.product_snapshot_id);
+                SELECT ar.status, ar.content_version INTO approval_state, approval_version
+                FROM approval_requests AS ar
+                WHERE ar.id = NEW.approval_request_id AND ar.content_item_id = NEW.content_item_id;
+                SELECT ci.version INTO content_version
+                FROM content_items AS ci WHERE ci.id = NEW.content_item_id;
+                SELECT ps.available, ps.collected_at, ps.source
+                INTO snapshot_available, snapshot_time, snapshot_source
+                FROM product_snapshots AS ps WHERE ps.id = NEW.product_snapshot_id;
+                SELECT p.source INTO product_source_value
+                FROM products AS p
+                WHERE p.id = (SELECT ps2.product_id FROM product_snapshots AS ps2
+                              WHERE ps2.id = NEW.product_snapshot_id);
                 IF approval_state IS DISTINCT FROM 'approved' THEN
                     RAISE EXCEPTION 'approved human review is required';
                 END IF;
@@ -94,6 +96,32 @@ def downgrade() -> None:
     bind.execute(
         text(
             """
+            CREATE OR REPLACE FUNCTION validate_publication_compliance()
+            RETURNS trigger LANGUAGE plpgsql AS $$
+            DECLARE approval_state approval_status;
+            DECLARE snapshot_available boolean;
+            DECLARE snapshot_time timestamptz;
+            BEGIN
+                SELECT status INTO approval_state
+                FROM approval_requests
+                WHERE id = NEW.approval_request_id AND content_item_id = NEW.content_item_id;
+                SELECT available, collected_at INTO snapshot_available, snapshot_time
+                FROM product_snapshots WHERE id = NEW.product_snapshot_id;
+                IF approval_state IS DISTINCT FROM 'approved' THEN
+                    RAISE EXCEPTION 'approved human review is required';
+                END IF;
+                IF snapshot_available IS DISTINCT FROM true THEN
+                    RAISE EXCEPTION 'available product snapshot is required';
+                END IF;
+                IF snapshot_time < now() - interval '60 minutes' THEN
+                    RAISE EXCEPTION 'product snapshot is stale';
+                END IF;
+                IF NEW.is_automatic THEN
+                    RAISE EXCEPTION 'automatic publication is disabled';
+                END IF;
+                RETURN NEW;
+            END;
+            $$;
             ALTER TABLE approval_requests DROP COLUMN IF EXISTS content_version;
             ALTER TABLE product_snapshots DROP COLUMN IF EXISTS source;
             """

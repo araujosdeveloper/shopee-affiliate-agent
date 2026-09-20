@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck test audit compose-config build up down migrate logs validate
+.PHONY: install lint format typecheck test test-integration audit compose-config build up down migrate logs validate
 
 install:
 	python -m pip install -e '.[dev]'
@@ -10,6 +10,8 @@ typecheck:
 	mypy
 test:
 	pytest tests/unit
+test-integration:
+	docker compose --profile test run --rm test pytest -p no:cacheprovider
 audit:
 	pip-audit
 compose-config:

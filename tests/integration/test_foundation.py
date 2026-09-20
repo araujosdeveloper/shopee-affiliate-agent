@@ -78,6 +78,8 @@ def test_application_and_database_use_the_same_price_policy() -> None:
             text("SELECT pg_get_functiondef('validate_publication_compliance()'::regprocedure)")
         ).scalar_one()
     assert "interval '60 minutes'" in definition
+    assert "publication snapshot does not belong to content product" in definition
+    assert "product snapshot timestamp is in the future" in definition
 
 
 def test_snapshot_provenance_and_approval_version_columns_exist() -> None:
@@ -103,6 +105,8 @@ def test_snapshot_provenance_and_approval_version_columns_exist() -> None:
 def test_database_blocks_publication_without_current_compliant_evidence() -> None:
     product_id = uuid4()
     snapshot_id = uuid4()
+    other_product_id = uuid4()
+    other_snapshot_id = uuid4()
     operator_id = uuid4()
     channel_id = uuid4()
     content_id = uuid4()
@@ -149,6 +153,33 @@ def test_database_blocks_publication_without_current_compliant_evidence() -> Non
         session.execute(
             text(
                 """
+                INSERT INTO products
+                    (id, source, external_id, title, is_active, version, created_at, updated_at)
+                VALUES (:id, 'manual', :external_id, 'Other Integration Product', true, 1,
+                        now(), now())
+                """
+            ),
+            {"id": other_product_id, "external_id": str(other_product_id)},
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO product_snapshots
+                    (id, product_id, source, price, currency, available, collected_at,
+                     idempotency_key, created_at, updated_at)
+                VALUES (:id, :product_id, 'manual', 20.00, 'BRL', true, now(), :key,
+                        now(), now())
+                """
+            ),
+            {
+                "id": other_snapshot_id,
+                "product_id": other_product_id,
+                "key": f"snapshot-{other_snapshot_id}",
+            },
+        )
+        session.execute(
+            text(
+                """
                 INSERT INTO media_channels
                     (id, channel_type, external_reference, display_name, is_active,
                      version, created_at, updated_at)
@@ -188,16 +219,18 @@ def test_database_blocks_publication_without_current_compliant_evidence() -> Non
         )
         session.commit()
 
-        def insert_publication(*, is_automatic: bool, key: str) -> None:
+        def insert_publication(
+            *, is_automatic: bool, key: str, publication_snapshot_id: object = snapshot_id
+        ) -> None:
             session.execute(
                 text(
                     """
                     INSERT INTO publications
                         (id, content_item_id, media_channel_id, approval_request_id,
                          product_snapshot_id, status, is_automatic, idempotency_key,
-                         created_at, updated_at)
+                         version, created_at, updated_at)
                     VALUES (:id, :content_id, :channel_id, :approval_id, :snapshot_id,
-                            'pending', :is_automatic, :key, now(), now())
+                            'pending', :is_automatic, :key, 1, now(), now())
                     """
                 ),
                 {
@@ -205,7 +238,7 @@ def test_database_blocks_publication_without_current_compliant_evidence() -> Non
                     "content_id": content_id,
                     "channel_id": channel_id,
                     "approval_id": approval_id,
-                    "snapshot_id": snapshot_id,
+                    "snapshot_id": publication_snapshot_id,
                     "is_automatic": is_automatic,
                     "key": key,
                 },
@@ -222,6 +255,26 @@ def test_database_blocks_publication_without_current_compliant_evidence() -> Non
         session.commit()
         with pytest.raises(DBAPIError):
             insert_publication(is_automatic=True, key=f"automatic-{uuid4()}")
+        session.rollback()
+        with pytest.raises(
+            DBAPIError, match="publication snapshot does not belong to content product"
+        ):
+            insert_publication(
+                is_automatic=False,
+                key=f"wrong-product-{uuid4()}",
+                publication_snapshot_id=other_snapshot_id,
+            )
+        session.rollback()
+        session.execute(
+            text(
+                "UPDATE product_snapshots SET collected_at = now() + interval '1 second' "
+                "WHERE id = :id"
+            ),
+            {"id": snapshot_id},
+        )
+        session.commit()
+        with pytest.raises(DBAPIError, match="product snapshot timestamp is in the future"):
+            insert_publication(is_automatic=False, key=f"future-{uuid4()}")
         session.rollback()
         session.execute(
             text("UPDATE product_snapshots SET collected_at = :collected_at WHERE id = :id"),
@@ -241,3 +294,14 @@ def test_database_blocks_publication_without_current_compliant_evidence() -> Non
         session.commit()
         with pytest.raises(DBAPIError):
             insert_publication(is_automatic=False, key=f"version-{uuid4()}")
+        session.rollback()
+        session.execute(
+            text("UPDATE product_snapshots SET collected_at = now() WHERE id = :id"),
+            {"id": snapshot_id},
+        )
+        session.execute(
+            text("UPDATE approval_requests SET content_version = 2 WHERE id = :id"),
+            {"id": approval_id},
+        )
+        session.commit()
+        insert_publication(is_automatic=False, key=f"valid-{uuid4()}")

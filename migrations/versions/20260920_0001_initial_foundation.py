@@ -415,18 +415,25 @@ def upgrade() -> None:
         DECLARE snapshot_time timestamptz;
         DECLARE snapshot_source product_source;
         DECLARE product_source_value product_source;
+        DECLARE content_product_id uuid;
+        DECLARE snapshot_product_id uuid;
         BEGIN
-            SELECT status, content_version INTO approval_state, approval_version FROM approval_requests
-            WHERE id = NEW.approval_request_id AND content_item_id = NEW.content_item_id;
-            SELECT version INTO content_version FROM content_items WHERE id = NEW.content_item_id;
-            SELECT available, collected_at, source INTO snapshot_available, snapshot_time, snapshot_source
-            FROM product_snapshots WHERE id = NEW.product_snapshot_id;
-            SELECT source INTO product_source_value FROM products
-            WHERE id = (SELECT product_id FROM product_snapshots WHERE id = NEW.product_snapshot_id);
+            SELECT ar.status, ar.content_version INTO approval_state, approval_version
+            FROM approval_requests AS ar
+            WHERE ar.id = NEW.approval_request_id AND ar.content_item_id = NEW.content_item_id;
+            SELECT ci.version, ci.product_id INTO content_version, content_product_id
+            FROM content_items AS ci WHERE ci.id = NEW.content_item_id;
+            SELECT product_id, available, collected_at, source
+            INTO snapshot_product_id, snapshot_available, snapshot_time, snapshot_source
+            FROM product_snapshots AS ps WHERE ps.id = NEW.product_snapshot_id;
+            SELECT p.source INTO product_source_value FROM products AS p
+            WHERE p.id = snapshot_product_id;
             IF approval_state IS DISTINCT FROM 'approved' THEN RAISE EXCEPTION 'approved human review is required'; END IF;
             IF approval_version IS DISTINCT FROM content_version THEN RAISE EXCEPTION 'approval does not match current content version'; END IF;
+            IF snapshot_product_id IS DISTINCT FROM content_product_id THEN RAISE EXCEPTION 'publication snapshot does not belong to content product'; END IF;
             IF snapshot_available IS DISTINCT FROM true THEN RAISE EXCEPTION 'available product snapshot is required'; END IF;
             IF snapshot_source IS DISTINCT FROM product_source_value THEN RAISE EXCEPTION 'snapshot provenance does not match product source'; END IF;
+            IF snapshot_time > now() THEN RAISE EXCEPTION 'product snapshot timestamp is in the future'; END IF;
             IF snapshot_time < now() - interval '60 minutes' THEN RAISE EXCEPTION 'product snapshot is stale'; END IF;
             IF NEW.is_automatic THEN RAISE EXCEPTION 'automatic publication is disabled'; END IF;
             RETURN NEW;
