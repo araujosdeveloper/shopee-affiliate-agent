@@ -93,6 +93,13 @@ class ProductSnapshot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_product_snapshots_product_collected", "product_id", "collected_at"),
     )
     product_id: Mapped[UUID] = mapped_column(ForeignKey("products.id", ondelete="RESTRICT"))
+    source: Mapped[ProductSource] = mapped_column(
+        Enum(
+            ProductSource,
+            name="product_source",
+            values_callable=lambda enum: [e.value for e in enum],
+        )
+    )
     price: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     currency: Mapped[str] = mapped_column(String(3), default="BRL")
     available: Mapped[bool] = mapped_column(Boolean)
@@ -173,6 +180,7 @@ class ApprovalRequest(UUIDPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
     content_item_id: Mapped[UUID] = mapped_column(
         ForeignKey("content_items.id", ondelete="RESTRICT")
     )
+    content_version: Mapped[int] = mapped_column(nullable=False, default=1)
     requested_by_id: Mapped[UUID] = mapped_column(ForeignKey("operators.id", ondelete="RESTRICT"))
     reviewer_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("operators.id", ondelete="RESTRICT"), nullable=True

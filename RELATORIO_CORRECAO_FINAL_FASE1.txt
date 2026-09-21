@@ -1,0 +1,116 @@
+RELATÓRIO FINAL — CORREÇÃO DE INTEGRIDADE DA FASE 1
+Projeto: shopee-affiliate-agent
+Branch: feat/foundation
+Data: 2026-09-20
+
+1. RESULTADO EXECUTIVO
+
+A correção final de integridade da Fase 1 foi concluída e publicada na branch
+feat/foundation. Os bloqueadores identificados pela auditoria independente foram
+corrigidos, testados e aprovados pela GitHub Actions.
+
+Não houve merge, force push, alteração da branch main ou alteração de recursos
+de outros projetos.
+
+2. CORREÇÕES IMPLEMENTADAS
+
+- validate_publication_compliance() agora verifica se o snapshot pertence ao
+  mesmo produto do conteúdo.
+- Snapshot de produto diferente é rejeitado com:
+  publication snapshot does not belong to content product
+- Snapshots com timestamp futuro são rejeitados pelo PostgreSQL com:
+  product snapshot timestamp is in the future
+- A migration 0003 agora restaura corretamente o trigger compatível com o
+  schema da migration 0002 durante o downgrade.
+- A migration 0004 aplica as correções incrementais nos bancos existentes.
+- O vínculo entre produto do conteúdo e produto do snapshot é validado mesmo
+  quando ambos possuem a mesma origem.
+- O target test-integration foi adicionado ao Makefile.
+- A descrição da PR #1 foi atualizada com as garantias e contagens corretas.
+
+3. MIGRATIONS
+
+- 20260920_0001_initial_foundation
+- 20260920_0002_privileges_and_publication_guards
+- 20260920_0003_snapshot_provenance
+- 20260920_0004_publication_product_guards
+
+Validações executadas:
+
+- banco vazio até head;
+- 0002 → 0003 → 0002;
+- publicação compatível com o schema 0002 após downgrade;
+- 0002 → 0003 → 0004;
+- downgrade completo;
+- novo upgrade completo até head;
+- upgrade do banco ativo até 0004.
+
+4. TESTES
+
+- 30 testes unitários aprovados.
+- 5 testes de integração aprovados.
+- 35 testes totais aprovados.
+
+Os testes de integração cobrem:
+
+- conteúdo do produto A com snapshot do produto B;
+- snapshot futuro rejeitado pelo PostgreSQL;
+- conteúdo, aprovação e snapshot corretamente relacionados;
+- downgrade 0003 para 0002 com trigger funcional;
+- novo upgrade até head restaurando todas as garantias.
+
+5. QUALIDADE E SEGURANÇA
+
+- Ruff: aprovado.
+- Mypy: aprovado.
+- pip-audit: nenhuma vulnerabilidade conhecida encontrada.
+- Gitleaks: aprovado.
+- Docker Compose config: aprovado.
+- Build das imagens: aprovado.
+- Healthchecks: aprovados.
+- Readiness normal e falha de Redis: aprovados.
+- Auditoria append-only: validada.
+- Backup e restauração isolada: aprovados.
+
+6. CI/CD
+
+GitHub Actions final aprovado:
+https://github.com/araujosdeveloper/shopee-affiliate-agent/actions/runs/35534027750
+
+A CI executou os jobs de qualidade/testes unitários e containers/integração.
+
+7. GIT E PULL REQUEST
+
+Commits publicados:
+
+- d235e2f — db: enforce publication product ownership guards
+- cf0f9ff — docs: record foundation integrity correction
+- e88a6f0 — docs: record final integrity commit and ci
+- 06a804a — docs: align final ci report references
+
+Head atual:
+06a804a
+
+Branch publicada:
+feat/foundation
+
+Pull Request draft:
+https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/1
+
+Estado da PR: aberta e draft.
+
+8. OBSERVAÇÕES RESIDUAIS
+
+- O host não possui o binário make; os targets foram validados pelos comandos
+  Docker equivalentes e permanecem definidos no Makefile.
+- A CI apresentou apenas aviso informativo sobre depreciação futura do Node.js
+  20 em actions existentes; não houve falha.
+- Não existem bloqueadores técnicos conhecidos para a Fase 1.
+
+9. CONFIRMAÇÕES
+
+- Nenhum merge realizado.
+- Nenhum force push realizado.
+- A branch main não foi alterada.
+- Nenhuma porta pública foi adicionada.
+- Nenhum recurso de outro projeto foi alterado.

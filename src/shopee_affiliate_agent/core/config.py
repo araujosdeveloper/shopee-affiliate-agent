@@ -2,7 +2,7 @@ from decimal import Decimal
 from functools import lru_cache
 from urllib.parse import quote
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     BUSINESS_TIMEZONE: str = "America/Sao_Paulo"
     AUTO_PUBLICATION_ENABLED: bool = False
     HUMAN_APPROVAL_REQUIRED: bool = True
-    PRICE_VALIDATION_MAX_AGE_MINUTES: int = Field(default=60, gt=0)
     SCORE_WEIGHT_CONVERSION_POTENTIAL: Decimal = Decimal("30")
     SCORE_WEIGHT_NET_COMMISSION: Decimal = Decimal("20")
     SCORE_WEIGHT_PRODUCT_QUALITY: Decimal = Decimal("15")
