@@ -7,16 +7,16 @@ Base confirmada: a200cc719a4c8ba2a57f22f9376b324478732d04
 
 1. COMMITS E RASTREABILIDADE
 
-- Commit da implementação validada: b93ba856e03c7f587bcfff9f2418f577809d38ca.
-- Commits novos da correção:
-  - c4e10a5 fix: enforce phase two integrity guarantees
-  - d679d84 test: cover phase two integrity recovery
-  - b93ba85 test: isolate worker configuration checks
-- Commit que atualiza este relatório: HEAD (commit documental separado).
-- Head final da PR: HEAD após o commit documental, sem merge.
-- Workflow validado da implementação: validate 35626426386.
-- O workflow validate deve executar novamente sobre o HEAD documental final; o
-  resultado canônico é o check associado ao HEAD da PR #2.
+- implementation_head: f18579d1179eec3f2d665b7312f9036c80240ad5.
+- report_base: f18579d1179eec3f2d665b7312f9036c80240ad5.
+- Commits novos desta correção final:
+  - c6603f4 fix: scope idempotency and snapshot identity
+  - f18579d test: cover idempotency and outbox concurrency
+- commit_documental: commit imediatamente posterior ao report_base; seu SHA não é
+  autorreferenciado e é informado no fechamento após o push.
+- final_pr_head: verificado literalmente após o push documental e informado no
+  fechamento, junto ao workflow executado sobre ele.
+- Workflow validado da implementação: validate 35633863773, SUCCESS.
 
 2. CORREÇÕES ENTREGUES
 
@@ -48,8 +48,19 @@ Idempotência:
 - replay é verificado antes de versionamento e transições;
 - mesma requisição retorna o recurso sem mutação, nova versão ou nova auditoria;
 - colisões de operação, entidade, ator ou payload retornam idempotency_conflict;
+- identificadores de path integram o contexto idempotente, inclusive product_id de
+  snapshots e assessments;
 - advisory lock transacional por chave fecha a corrida entre requests concorrentes;
 - auditoria permanece append-only.
+
+Identidade de snapshots:
+
+- source_payload_hash preserva somente o hash declarado pela fonte;
+- a identidade determinística interna é canonical:{canonical_sha256(normalized)};
+- nova Idempotency-Key HTTP com a mesma evidência retorna o snapshot existente;
+- reutilização do hash declarado com conteúdo diferente retorna
+  source_payload_hash_conflict;
+- a chave HTTP permanece somente em idempotency_records e na auditoria.
 
 Entrega durável:
 
@@ -61,6 +72,8 @@ Entrega durável:
 - worker permanece concurrency=1;
 - processamento usa advisory lock por lote;
 - tarefa repetida após terminalização é no-op;
+- batch_locked é tratado pela task como concorrência segura e não marca o lote como
+  failed enquanto outro worker o processa;
 - cancelamento terminaliza a intenção e impede processamento posterior;
 - esgotamento de tentativas abre OperationalAlert e transições são auditadas.
 
@@ -94,20 +107,28 @@ Isolamento por linha:
 - ausência de source no schema manual;
 - configuração de retry limitado da outbox e worker concurrency=1;
 - presença das tabelas idempotency_records e import_outbox.
+- replay, payload divergente, parent/entidade divergente e ator divergente nas
+  mutações de produto, snapshot, importação, assessment, score, oportunidade,
+  shortlist, dismiss, acknowledge e resolve;
+- transação conjunta de ImportBatch, ImportRow e ImportOutbox;
+- falha de broker, backoff, recuperação failed -> published -> completed, quinta
+  falha, alerta único, cancelamento e tarefa repetida;
+- concorrência com SELECT FOR UPDATE SKIP LOCKED e advisory lock por lote;
+- batch_locked sem falso failed pelo ImportTask.
 
 Contagem validada:
 
 - 52 testes unitários aprovados;
-- 63 testes completos aprovados, com 2 warnings não bloqueantes.
+- 73 testes completos aprovados, com 2 warnings não bloqueantes.
 
 5. VALIDAÇÕES
 
-Workflow validate 35626426386, head b93ba85:
+Workflow validate 35633863773, implementation_head f18579d:
 
 - Ruff: aprovado;
 - Mypy strict: aprovado em 27 módulos;
 - testes unitários: 52 aprovados;
-- testes completos PostgreSQL/Redis: 63 aprovados;
+- testes completos PostgreSQL/Redis: 73 aprovados;
 - pip-audit: nenhuma vulnerabilidade conhecida;
 - gitleaks: aprovado;
 - docker compose config e build completo: aprovados;
@@ -115,8 +136,8 @@ Workflow validate 35626426386, head b93ba85:
 - migrations progressivas, downgrade e SQL offline: aprovados;
 - backup e restore isolado: aprovado;
 - nenhuma porta publicada e todas as redes internas: confirmado;
-- consumo observado: worker 101 MiB, API 71,94 MiB, scheduler 52,39 MiB,
-  PostgreSQL 48,32 MiB e Redis 8,742 MiB, todos dentro dos limites.
+- consumo observado: worker 102,7 MiB, API 71,97 MiB, scheduler 52,4 MiB,
+  PostgreSQL 49,33 MiB e Redis 8,594 MiB, todos dentro dos limites.
 
 A readiness normal é coberta pelo docker compose up --wait. A readiness com Redis
 indisponível é validada pela CI em stack isolada; o script exige HTTP 503,
@@ -131,6 +152,8 @@ indisponível é validada pela CI em stack isolada; o script exige HTTP 503,
 - A CI emitiu aviso de descontinuação futura do Node.js 20 nas versões atuais de
   actions/checkout, actions/setup-python e gitleaks-action; não afetou a validação.
 - O contrato approved_api continua propositalmente inativo na Fase 2.
+- O dispatcher depende de uma réplica operacional do scheduler; SKIP LOCKED torna
+  múltiplas execuções seguras, mas não substitui monitoramento do scheduler.
 
 7. GOVERNANÇA
 
