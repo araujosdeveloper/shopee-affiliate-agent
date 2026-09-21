@@ -14,3 +14,12 @@ minúsculas.
 Replays com a mesma chave, operação, ator, entidade e payload retornam o recurso já
 produzido sem nova alteração, incremento de versão ou auditoria. Reuso da chave em
 outro contexto retorna `idempotency_conflict`.
+
+Identificadores presentes na URL integram o contexto idempotente. Assim, a mesma
+chave e corpo usados com outro `product_id`, `batch_id`, `assessment_id`, `score_id`,
+`opportunity_id` ou `alert_id` retornam `idempotency_conflict`.
+
+`source_payload_hash` preserva exclusivamente o hash declarado pela fonte. A
+identidade interna de snapshots usa `ProductSnapshot.idempotency_key` no formato
+`canonical:{digest}`. Reutilizar o hash declarado com conteúdo comercial diferente
+retorna `source_payload_hash_conflict`.

@@ -115,10 +115,15 @@ class ImportTask(Task):  # type: ignore[misc]
 )
 def process_import_task(self: object, batch_id: str) -> None:
     from shopee_affiliate_agent.db.session import SessionFactory
+    from shopee_affiliate_agent.services.commerce import DomainError
     from shopee_affiliate_agent.services.ingestion import process_batch
 
     with SessionFactory.begin() as session:
-        process_batch(session, UUID(batch_id))
+        try:
+            process_batch(session, UUID(batch_id))
+        except DomainError as exc:
+            if exc.code != "batch_locked":
+                raise
 
 
 @celery_app.task(name="phase2.dispatch_import_outbox")  # type: ignore[misc]

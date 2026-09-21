@@ -194,6 +194,20 @@ def process_batch(session: Session, batch_id: UUID) -> ImportBatch:
                 if snapshot:
                     row.status = ImportRowStatus.DUPLICATE
                 else:
+                    if normalized.source_payload_hash:
+                        source_hash_conflict = session.scalar(
+                            select(ProductSnapshot).where(
+                                ProductSnapshot.source == batch.source,
+                                ProductSnapshot.source_payload_hash
+                                == normalized.source_payload_hash,
+                                ProductSnapshot.idempotency_key != snapshot_key,
+                            )
+                        )
+                        if source_hash_conflict:
+                            raise DomainError(
+                                "source_payload_hash_conflict",
+                                "source payload hash belongs to different evidence",
+                            )
                     snapshot = ProductSnapshot(
                         product_id=product.id,
                         source=batch.source,
@@ -217,6 +231,18 @@ def process_batch(session: Session, batch_id: UUID) -> ImportBatch:
                     )
                 row.product_id = product.id
                 row.product_snapshot_id = snapshot.id
+        except DomainError as exc:
+            row.status = ImportRowStatus.REJECTED
+            row.error_code = exc.code
+            row.error_message = "Row conflicts with existing source evidence"
+            audit(
+                session,
+                "import.row_rejected",
+                "import_row",
+                row.id,
+                f"audit:rejected:{row.id}",
+                batch.requested_by_id,
+            )
         except (NormalizationError, IntegrityError, SQLAlchemyError):
             row.status = ImportRowStatus.REJECTED
             row.error_code = "row_processing_error"

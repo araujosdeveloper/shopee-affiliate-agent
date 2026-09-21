@@ -213,7 +213,7 @@ def update_product(
 def create_snapshot(
     product_id: UUID, body: SnapshotCreate, session: Db, operator: Operator, key: Key
 ) -> ProductSnapshot:
-    payload = body.model_dump(mode="json")
+    payload = {"product_id": str(product_id), "body": body.model_dump(mode="json")}
     prior = replay(
         session,
         key=key,
@@ -239,10 +239,9 @@ def create_snapshot(
         product.source,
     )
     digest = canonical_sha256(normalized)
+    snapshot_key = f"canonical:{digest}"
     duplicate = session.scalar(
-        select(ProductSnapshot).where(
-            ProductSnapshot.source_payload_hash == digest, ProductSnapshot.product_id == product.id
-        )
+        select(ProductSnapshot).where(ProductSnapshot.idempotency_key == snapshot_key)
     )
     if duplicate:
         record(
@@ -256,6 +255,16 @@ def create_snapshot(
         )
         session.commit()
         return duplicate
+    if normalized.source_payload_hash:
+        source_hash_conflict = session.scalar(
+            select(ProductSnapshot).where(
+                ProductSnapshot.source == product.source,
+                ProductSnapshot.source_payload_hash == normalized.source_payload_hash,
+                ProductSnapshot.idempotency_key != snapshot_key,
+            )
+        )
+        if source_hash_conflict:
+            raise HTTPException(status_code=409, detail="source_payload_hash_conflict")
     snapshot = ProductSnapshot(
         product_id=product.id,
         source=product.source,
@@ -264,7 +273,7 @@ def create_snapshot(
         available=normalized.available,
         collected_at=normalized.collected_at,
         source_payload_hash=normalized.source_payload_hash or digest,
-        idempotency_key=key,
+        idempotency_key=snapshot_key,
     )
     session.add(snapshot)
     session.flush()
@@ -490,7 +499,7 @@ def cancel_import(
 def create_assessment(
     product_id: UUID, body: AssessmentCreate, session: Db, operator: Operator, key: Key
 ) -> ProductAssessment:
-    payload = body.model_dump(mode="json")
+    payload = {"product_id": str(product_id), "body": body.model_dump(mode="json")}
     prior = replay(
         session,
         key=key,

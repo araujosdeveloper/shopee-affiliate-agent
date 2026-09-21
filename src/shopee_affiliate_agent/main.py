@@ -116,6 +116,7 @@ async def http_error(request: Request, exc: StarletteHTTPException) -> JSONRespo
         "conflict",
         "stale_version",
         "idempotency_conflict",
+        "source_payload_hash_conflict",
         "unsupported_source",
         "invalid_import_file",
         "import_limit_exceeded",
