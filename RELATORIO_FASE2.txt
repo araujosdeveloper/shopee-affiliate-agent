@@ -118,9 +118,9 @@ Workflow validate 35626426386, head b93ba85:
 - consumo observado: worker 101 MiB, API 71,94 MiB, scheduler 52,39 MiB,
   PostgreSQL 48,32 MiB e Redis 8,742 MiB, todos dentro dos limites.
 
-A readiness normal é coberta pelo docker compose up --wait. A verificação de
-readiness com Redis indisponível permanece no script operacional existente e não
-foi executada destrutivamente contra serviços fora do projeto.
+A readiness normal é coberta pelo docker compose up --wait. A readiness com Redis
+indisponível é validada pela CI em stack isolada; o script exige HTTP 503,
+`status=not_ready` e `dependencies.redis=unavailable`, e reinicia o Redis via trap.
 
 6. RISCOS RESIDUAIS REAIS
 

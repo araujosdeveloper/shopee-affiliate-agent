@@ -51,6 +51,8 @@ jobs:
         run: docker compose build
       - name: Start isolated stack
         run: docker compose up -d --wait
+      - name: Validate readiness with Redis unavailable
+        run: ./scripts/check-readiness-failure.sh
       - name: Run integration tests
         run: docker compose --profile test run --rm test pytest -p no:cacheprovider
       - name: Validate migration boundaries
