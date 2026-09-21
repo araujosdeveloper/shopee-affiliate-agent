@@ -1,0 +1,109 @@
+RELATÓRIO — ÚLTIMO AJUSTE DE INTEGRIDADE DA FASE 2
+
+Projeto: /opt/shopee-affiliate-agent
+Branch: feat/controlled-ingestion
+PR: https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/2
+Head auditado no início: eca8b8436c07576e10643fd90ac1d0f9aff25168
+
+1. CORREÇÕES REALIZADAS
+
+- canonical_sha256 passou a usar uma representação específica de identidade
+  canônica que exclui source_payload_hash.
+- canonical_data foi preservada para manter o payload normalizado completo em
+  ImportRow.normalized_data.
+- ProductSnapshot.source_payload_hash agora armazena exclusivamente o hash
+  declarado pela fonte.
+- Quando a fonte não fornece hash, ProductSnapshot.source_payload_hash permanece
+  NULL.
+- O digest interno é armazenado somente em ProductSnapshot.idempotency_key no
+  formato canonical:{digest}.
+- A mesma identidade canônica e o mesmo hash externo retornam o snapshot
+  existente.
+- A mesma identidade canônica, com ambos os hashes externos ausentes, retorna o
+  snapshot existente.
+- Identidade canônica igual com hashes externos diferentes retorna
+  source_payload_hash_conflict.
+- A alternância entre NULL e hash externo também retorna
+  source_payload_hash_conflict.
+- A reutilização do mesmo hash externo com preço, disponibilidade, collected_at
+  ou outra identidade canônica diferente retorna source_payload_hash_conflict.
+- Snapshots existentes não são atualizados, preservando sua imutabilidade.
+- Conflitos não criam snapshot, AuditEvent ou IdempotencyRecord adicionais na
+  transação rejeitada.
+- A política foi aplicada à rota manual, à importação manual e ao fluxo CSV
+  official_import.
+
+2. TESTES ADICIONADOS
+
+- canonical_sha256 igual com e sem source_payload_hash.
+- canonical_sha256 igual com hashes externos diferentes.
+- source_payload_hash NULL quando não fornecido.
+- deduplicação da mesma evidência sem hash com nova Idempotency-Key HTTP.
+- deduplicação da mesma evidência com o mesmo hash e nova Idempotency-Key HTTP.
+- conflito para a mesma evidência com hashes externos diferentes.
+- conflito ao alternar entre NULL e hash externo.
+- conflito ao reutilizar o mesmo hash com preço diferente.
+- conflito ao reutilizar o mesmo hash com disponibilidade diferente.
+- conflito ao reutilizar o mesmo hash com collected_at diferente.
+- aplicação da política de deduplicação e conflito ao CSV official_import.
+- confirmação de que conflitos não criam snapshots duplicados.
+- confirmação de que conflitos não persistem nova auditoria nem novo registro de
+  idempotência.
+
+3. COMMITS
+
+- 3b9f152 — fix: separate snapshot identity from source hash
+- fd6605b — test: cover snapshot provenance conflicts
+- 2c9ea27 — test: isolate source hashes across scenarios
+- 7f9ec05 — docs: record final snapshot integrity validation
+
+implementation_head: 2c9ea2767e5b163fff785f71edac46c020516f21
+commit_documental: 7f9ec059f676488e65ee5291fc292119680806ad
+final_pr_head verificado: 7f9ec059f676488e65ee5291fc292119680806ad
+
+4. VALIDAÇÃO
+
+Workflow do implementation_head: 35643280516 — SUCCESS
+Workflow do final_pr_head: 35643697642 — SUCCESS
+
+- Ruff: aprovado.
+- Mypy strict: aprovado em 27 módulos.
+- Testes unitários: 53 aprovados.
+- Testes completos com PostgreSQL e Redis: 83 aprovados.
+- pip-audit: aprovado, sem vulnerabilidades conhecidas.
+- gitleaks: aprovado.
+- docker compose config: aprovado.
+- build completo: aprovado.
+- healthchecks e readiness normal: aprovados.
+- readiness com Redis indisponível: aprovada com HTTP 503 e estado degradado
+  documentado.
+- migrations 0005 -> 0006 -> 0005 -> head: aprovadas.
+- downgrade completo e novo upgrade completo: aprovados.
+- SQL offline: aprovado.
+- backup e restore isolado: aprovados.
+- ausência de portas publicadas: confirmada.
+- redes internas: confirmadas.
+- limites de consumo dos containers: aprovados.
+
+5. ESTADO FINAL AUDITADO
+
+- Head local: 7f9ec059f676488e65ee5291fc292119680806ad.
+- Head remoto: 7f9ec059f676488e65ee5291fc292119680806ad.
+- PR #2: OPEN e DRAFT contra main.
+- mergedAt: NULL.
+- Worktree: limpo e sincronizado no momento da auditoria final.
+- Nenhuma migration foi criada neste ajuste, pois não houve alteração de schema.
+- Nenhum merge foi realizado.
+- Nenhum force push foi realizado.
+- Nenhum rebase destrutivo foi realizado.
+- A branch main não foi alterada.
+- A Fase 3 não foi iniciada.
+
+6. RISCOS RESIDUAIS
+
+- A autenticação permanece baseada em Bearer token compartilhado; a atribuição por
+  operador é auditável, mas não equivale a autenticação individual forte.
+- A recuperação da outbox depende de ao menos uma réplica operacional do
+  scheduler, embora a intenção permaneça durável no PostgreSQL.
+- approved_api permanece propositalmente apenas como contrato arquitetural
+  inativo na Fase 2.
