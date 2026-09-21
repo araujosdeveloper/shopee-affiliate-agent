@@ -1,264 +1,142 @@
-RELATÓRIO FINAL — FASE 2
-INGESTÃO CONTROLADA E INTELIGÊNCIA COMERCIAL
+RELATÓRIO FINAL — CORREÇÃO DE INTEGRIDADE DA FASE 2
 
 Projeto: shopee-affiliate-agent
 Branch: feat/controlled-ingestion
-Commit head: d8d777ec6ed8d06e0790214970c1a4da446a1a59
 PR draft: https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/2
-CI: https://github.com/araujosdeveloper/shopee-affiliate-agent/actions/runs/35552812084
+Base confirmada: a200cc719a4c8ba2a57f22f9376b324478732d04
 
-1. RESUMO EXECUTIVO
+1. COMMITS E RASTREABILIDADE
 
-A Fase 2 foi implementada e entregue em uma PR draft destinada à main, sem merge.
-O sistema agora suporta ingestão manual e importação de CSV oficial fornecido pelo
-operador, com normalização determinística, idempotência, deduplicação, snapshots
-históricos, assessments comerciais, scores imutáveis, ranking, oportunidades e
-alertas internos.
+- Commit da implementação validada: b93ba856e03c7f587bcfff9f2418f577809d38ca.
+- Commits novos da correção:
+  - c4e10a5 fix: enforce phase two integrity guarantees
+  - d679d84 test: cover phase two integrity recovery
+  - b93ba85 test: isolate worker configuration checks
+- Commit que atualiza este relatório: HEAD (commit documental separado).
+- Head final da PR: HEAD após o commit documental, sem merge.
+- Workflow validado da implementação: validate 35626426386.
+- O workflow validate deve executar novamente sobre o HEAD documental final; o
+  resultado canônico é o check associado ao HEAD da PR #2.
 
-A fonte approved_api existe somente como contrato e fronteira arquitetural. Nenhuma
-chamada externa foi implementada.
-
-O worktree estava limpo e sincronizado com a branch remota ao final da entrega.
-
-2. ARQUITETURA IMPLEMENTADA
-
-Fluxo determinístico:
-
-fonte autorizada
-  -> ImportBatch / ImportRow
-  -> Product / ProductSnapshot
-  -> ProductAssessment
-  -> ProductScore
-  -> ProductOpportunity / OperationalAlert
-
-Principais características:
-
-- ingestão manual funcional;
-- CSV official_import fornecido exclusivamente pelo operador;
-- approved_api sem execução de chamadas externas;
-- normalização determinística e validação UTF-8;
-- hashes SHA-256 de payload e representação canônica;
-- idempotência e deduplicação de produtos e snapshots;
-- processamento Celery com concorrência 1;
-- scoring determinístico com sete dimensões Decimal;
-- ranking com filtros, paginação e ordenação em allowlist;
-- oportunidades históricas e decisões humanas;
-- alertas operacionais internos;
-- auditoria append-only;
-- constraints e triggers PostgreSQL para defesa em profundidade.
-
-3. ENTIDADES CRIADAS
-
-- ImportBatch
-- ImportRow
-- ProductAssessment
-- ProductScore
-- ProductOpportunity
-- OperationalAlert
-
-Product permanece único por source + external_id. ProductSnapshot preserva o
-histórico comercial. Assessments, scores e snapshots são protegidos contra
-alteração. Entidades mutáveis usam versionamento otimista.
-
-4. MIGRATIONS
-
-Migration criada:
-
-- 20260921_0005_controlled_ingestion
-
-Validações executadas:
-
-- upgrade de banco vazio até head;
-- upgrade do banco existente da Fase 1;
-- downgrade de 0005 para 0004;
-- downgrade completo até base;
-- upgrade progressivo até 0004 e depois até head;
-- geração offline do SQL de upgrade e downgrade.
-
-A migration adiciona constraints e triggers para ranges, estados, contagens,
-timestamps, compatibilidade entre produto, snapshot, assessment, score e
-oportunidade, imutabilidade e transições válidas.
-
-5. ENDPOINTS IMPLEMENTADOS
-
-Produtos e snapshots:
-
-- POST /api/v1/products
-- GET /api/v1/products
-- GET /api/v1/products/{product_id}
-- PATCH /api/v1/products/{product_id}
-- POST /api/v1/products/{product_id}/snapshots
-- GET /api/v1/products/{product_id}/snapshots
-
-Importações:
-
-- POST /api/v1/imports/manual
-- POST /api/v1/imports/official
-- GET /api/v1/imports
-- GET /api/v1/imports/{import_batch_id}
-- GET /api/v1/imports/{import_batch_id}/rows
-- POST /api/v1/imports/{import_batch_id}/cancel
-
-Assessments e scores:
-
-- POST /api/v1/products/{product_id}/assessments
-- GET /api/v1/products/{product_id}/assessments
-- POST /api/v1/assessments/{assessment_id}/score
-- GET /api/v1/products/{product_id}/scores
+2. CORREÇÕES ENTREGUES
 
 Oportunidades:
 
-- POST /api/v1/scores/{score_id}/opportunities
-- GET /api/v1/opportunities
-- GET /api/v1/opportunities/{opportunity_id}
-- POST /api/v1/opportunities/{opportunity_id}/shortlist
-- POST /api/v1/opportunities/{opportunity_id}/dismiss
+- migration incremental 20260921_0006, sem alteração da 0005;
+- vínculos, score mínimo, score consistente e proveniência continuam protegidos;
+- produto ativo, snapshot disponível, não futuro e válido são exigidos na criação
+  e em candidate -> shortlisted;
+- candidate -> dismissed não revalida frescor, atividade ou disponibilidade;
+- candidate -> expired exige expires_at <= now();
+- estados terminalizados não possuem transição de saída;
+- expires_at é invariavelmente snapshot.collected_at + 60 minutos;
+- geração é rejeitada quando não resta validade da evidência.
 
-Alertas:
+Proveniência:
 
-- GET /api/v1/alerts
-- GET /api/v1/alerts/{alert_id}
-- POST /api/v1/alerts/{alert_id}/acknowledge
-- POST /api/v1/alerts/{alert_id}/resolve
+- POST /api/v1/products cria somente manual e não expõe source no schema;
+- snapshot genérico aceita somente produto manual;
+- official_import é produzido somente pelo fluxo CSV do operador;
+- approved_api permanece enum inativo e nenhuma rota o cria;
+- source_payload_hash aceita somente SHA-256 hexadecimal de 64 caracteres e é
+  normalizado para minúsculas.
 
-Todos os endpoints /api/v1 permanecem autenticados. Mutações aplicáveis exigem
-Idempotency-Key. Ações humanas exigem X-Operator-ID. Atualizações usam optimistic
-locking. O OpenAPI contém 24 paths.
+Idempotência:
 
-6. CELERY E SCHEDULER
+- idempotency_records persiste chave global, operação, entidade, ator e fingerprint
+  canônico do payload;
+- replay é verificado antes de versionamento e transições;
+- mesma requisição retorna o recurso sem mutação, nova versão ou nova auditoria;
+- colisões de operação, entidade, ator ou payload retornam idempotency_conflict;
+- advisory lock transacional por chave fecha a corrida entre requests concorrentes;
+- auditoria permanece append-only.
 
-Tarefas:
+Entrega durável:
 
-- phase2.process_import
-- phase2.expire_opportunities
+- import_outbox é gravada na mesma transação do ImportBatch e ImportRow;
+- estados pending, published, completed e failed, tentativas, próxima tentativa,
+  backoff limitado e erro sanitizado;
+- dispatcher periódico usa SELECT FOR UPDATE SKIP LOCKED;
+- publicação Celery possui retry habilitado e limitado;
+- worker permanece concurrency=1;
+- processamento usa advisory lock por lote;
+- tarefa repetida após terminalização é no-op;
+- cancelamento terminaliza a intenção e impede processamento posterior;
+- esgotamento de tentativas abre OperationalAlert e transições são auditadas.
 
-O worker utiliza concorrência 1, prefetch 1, ack tardio, timeout, retry limitado,
-backoff exponencial e jitter.
+Isolamento por linha:
 
-O Celery Beat é um serviço separado e executa a cada 15 minutos. Ele expira
-oportunidades vencidas, abre alertas de snapshots vencidos relacionados a
-oportunidades ativas e resolve alertas quando a condição deixa de existir.
+- process_batch usa savepoint por ImportRow;
+- somente erros esperados de normalização e SQLAlchemy são capturados;
+- apenas a linha defeituosa sofre rollback;
+- códigos e mensagens persistidos são estáveis e sanitizados;
+- contagens e estados completed, partially_completed e failed são derivados dos
+  resultados finais das linhas.
 
-Limites do scheduler:
+3. MIGRATIONS
 
-- memória: 128 MiB;
-- CPU: 0,10;
-- sem porta publicada;
-- filesystem read-only;
-- usuário não root;
-- cap_drop ALL;
-- no-new-privileges;
-- rede interna.
+- Nova migration: 20260921_0006_integrity_correction.py.
+- Upgrade vazio até head: aprovado na CI.
+- Upgrade 0005 -> 0006: aprovado na CI.
+- Downgrade 0006 -> 0005: aprovado na CI.
+- Novo upgrade até head: aprovado na CI.
+- Downgrade completo e novo upgrade completo: aprovado na CI.
+- SQL offline de upgrade e downgrade 0006 -> 0005: aprovado na CI.
 
-7. RESULTADOS DOS TESTES E QUALIDADE
+4. TESTES ADICIONADOS
 
-- Ruff: aprovado.
-- Mypy strict: aprovado em 26 módulos.
-- Pytest unitário local: 49 testes aprovados.
-- Pytest completo na CI: 57 testes aprovados, com 2 warnings.
-- Os 35 testes da Fase 1 foram preservados.
-- pip-audit: nenhuma vulnerabilidade conhecida.
-- Gitleaks: nenhum vazamento encontrado.
-- docker compose config: aprovado.
-- Build completo dos containers: aprovado.
-- Healthchecks de PostgreSQL, Redis, API, worker e scheduler: aprovados.
-- Testes de integração: aprovados.
-- Backup e restore isolado: aprovado.
-- Migrations progressivas: aprovadas.
-- Ausência de portas publicadas: confirmada.
-- Redes internas: confirmadas.
+- validade e expiração da evidência no trigger PostgreSQL;
+- impossibilidade de estender expires_at além de collected_at + 60 minutos;
+- processamento integrado manual até oportunidade, shortlist, dismiss, expired,
+  OperationalAlert e AuditEvent, com registros consultados diretamente no banco;
+- violação PostgreSQL em uma linha seguida de processamento da linha seguinte;
+- validação e normalização de source_payload_hash;
+- ausência de source no schema manual;
+- configuração de retry limitado da outbox e worker concurrency=1;
+- presença das tabelas idempotency_records e import_outbox.
 
-Checks obrigatórios:
+Contagem validada:
 
-- quality-and-unit-tests: SUCCESS, duração de 1 minuto e 4 segundos.
-- containers-and-integration: SUCCESS, duração de 2 minutos e 2 segundos.
+- 52 testes unitários aprovados;
+- 63 testes completos aprovados, com 2 warnings não bloqueantes.
 
-8. BACKUP E RESTORE
+5. VALIDAÇÕES
 
-O workflow criou um backup no ambiente isolado da CI e executou o restore em um
-banco temporário, sem substituir o banco usado pela aplicação. Resultado:
+Workflow validate 35626426386, head b93ba85:
 
-- Isolated restore test passed.
+- Ruff: aprovado;
+- Mypy strict: aprovado em 27 módulos;
+- testes unitários: 52 aprovados;
+- testes completos PostgreSQL/Redis: 63 aprovados;
+- pip-audit: nenhuma vulnerabilidade conhecida;
+- gitleaks: aprovado;
+- docker compose config e build completo: aprovados;
+- stack com healthchecks: aprovada;
+- migrations progressivas, downgrade e SQL offline: aprovados;
+- backup e restore isolado: aprovado;
+- nenhuma porta publicada e todas as redes internas: confirmado;
+- consumo observado: worker 101 MiB, API 71,94 MiB, scheduler 52,39 MiB,
+  PostgreSQL 48,32 MiB e Redis 8,742 MiB, todos dentro dos limites.
 
-9. CONSUMO DOS CONTAINERS
+A readiness normal é coberta pelo docker compose up --wait. A verificação de
+readiness com Redis indisponível permanece no script operacional existente e não
+foi executada destrutivamente contra serviços fora do projeto.
 
-Medição registrada na CI:
+6. RISCOS RESIDUAIS REAIS
 
-- API:        0,11% CPU; 70,84 MiB / 384 MiB.
-- Worker:     0,13% CPU; 64,94 MiB / 512 MiB.
-- Scheduler:  2,83% CPU; 51,93 MiB / 128 MiB.
-- Redis:      0,41% CPU; 8,824 MiB / 128 MiB.
-- PostgreSQL: 0,04% CPU; 46,51 MiB / 768 MiB.
+- A autenticação ainda usa Bearer token compartilhado; X-Operator-ID fornece
+  atribuição auditável, mas não autenticação individual forte.
+- A garantia de entrega depende de uma réplica operacional do scheduler; a outbox
+  preserva a intenção durante indisponibilidade do Redis e permite recuperação.
+- A CI emitiu aviso de descontinuação futura do Node.js 20 nas versões atuais de
+  actions/checkout, actions/setup-python e gitleaks-action; não afetou a validação.
+- O contrato approved_api continua propositalmente inativo na Fase 2.
 
-10. GOVERNANÇA E DOCUMENTAÇÃO
+7. GOVERNANÇA
 
-Foram atualizados ou criados:
-
-- AGENTS.md para a Fase 2;
-- workflow para pull requests destinados à main e pushes em main;
-- ADR da ingestão controlada;
-- ADR da política commercial-opportunity-v1;
-- contrato do CSV official_import;
-- arquitetura e modelo de dados;
-- threat model;
-- política de retenção de ImportRow.raw_data;
-- runbook de importação;
-- runbook de falhas;
-- runbook do scheduler;
-- documentação do OpenAPI;
-- README;
-- roadmap.
-
-11. PROTEÇÃO DA MAIN
-
-A proteção da main e os rulesets foram consultados pela GitHub CLI. Ambos
-retornaram HTTP 403, informando que o repositório privado exige GitHub Pro ou que
-o repositório seja tornado público para habilitar o recurso.
-
-A limitação foi documentada e não foi contornada. Quando o recurso estiver
-disponível, a main deverá exigir:
-
-- quality-and-unit-tests;
-- containers-and-integration.
-
-Não deve ser criada exigência impossível de aprovação por terceiros, pois o
-repositório pertence a um único operador.
-
-12. COMMITS DA ENTREGA
-
-- 6f95020 feat: add controlled ingestion domain schema
-- db4193e feat: implement deterministic controlled ingestion
-- 27ed214 feat: add scoring opportunities and internal scheduler
-- f0f7a50 feat: expose authenticated phase two API
-- 4152112 docs: document controlled ingestion operations
-- d8d777 ci: validate migrations backup and isolation
-
-13. RISCOS RESIDUAIS
-
-- A autenticação ainda usa Bearer token compartilhado. X-Operator-ID registra o
-  ator, mas não substitui autenticação individual forte.
-- O singleton do Celery Beat depende de manter uma única réplica operacional; não
-  existe lock distribuído.
-- A retenção de ImportRow.raw_data está documentada como 30 dias, mas a rotina
-  automática de descarte sanitizado ainda deverá ser implementada.
-
-14. CONFIRMAÇÕES DE SEGURANÇA E ESCOPO
-
-Confirmado ao final da Fase 2:
-
-- nenhum scraping foi implementado;
-- nenhum acesso automatizado ao site da Shopee foi implementado;
-- nenhuma API não oficial foi implementada;
-- nenhum login automatizado ou tratamento de cookies foi implementado;
-- nenhuma chamada externa de runtime foi implementada;
-- nenhum egress externo foi adicionado ao worker ou scheduler;
-- nenhuma geração de link afiliado foi implementada;
-- nenhuma publicação automática foi habilitada;
-- nenhuma mensageria, Hermes, n8n, Telegram ou WhatsApp foi adicionada;
-- nenhuma IA generativa foi adicionada;
-- nenhuma interface web foi adicionada;
-- nenhuma porta pública ou integração com Traefik foi adicionada;
-- nenhum container, rede, volume ou serviço de outro projeto foi alterado;
-- aprovação humana e auditoria append-only permanecem invariantes.
-
-FIM DO RELATÓRIO
+- PR #2 permanece draft e aberta contra main.
+- Nenhum merge, force push ou rebase destrutivo foi realizado.
+- main não foi alterada.
+- Nenhum scraping, acesso automatizado à Shopee, API não oficial, egress de runtime,
+  publicação, mensageria, geração de link, IA generativa ou interface web foi
+  introduzido.
