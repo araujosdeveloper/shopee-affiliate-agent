@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, feat/foundation]
+    branches: [main]
 
 permissions:
   contents: read
@@ -51,8 +51,40 @@ jobs:
         run: docker compose build
       - name: Start isolated stack
         run: docker compose up -d --wait
+      - name: Validate readiness with Redis unavailable
+        run: ./scripts/check-readiness-failure.sh
       - name: Run integration tests
         run: docker compose --profile test run --rm test pytest -p no:cacheprovider
+      - name: Validate migration boundaries
+        run: |
+          docker compose run --rm migrate alembic downgrade 20260921_0005
+          docker compose run --rm migrate alembic upgrade 20260921_0006
+          docker compose run --rm migrate alembic downgrade 20260921_0005
+          docker compose run --rm migrate alembic upgrade head
+          docker compose run --rm migrate alembic downgrade base
+          docker compose run --rm migrate alembic upgrade head
+      - name: Validate offline migration SQL
+        run: |
+          docker compose run --rm migrate alembic upgrade head --sql > /tmp/phase2-upgrade.sql
+          docker compose run --rm migrate alembic downgrade 20260921_0006:20260921_0005 --sql > /tmp/phase2-downgrade.sql
+      - name: Validate isolated backup and restore
+        run: |
+          mkdir -p /tmp/shopee-affiliate-agent-backups
+          backup_path=$(./scripts/backup.sh /tmp/shopee-affiliate-agent-backups)
+          ./scripts/restore-test.sh "$backup_path"
+      - name: Verify network and port isolation
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+
+          config = json.loads(subprocess.check_output(["docker", "compose", "config", "--format", "json"]))
+          assert all("ports" not in service for service in config["services"].values())
+          assert all(network.get("internal") is True for network in config["networks"].values())
+          print("No published ports; all project networks are internal")
+          PY
+      - name: Record container resource usage
+        run: docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'
       - name: Cleanup runner resources
         if: always()
         run: |

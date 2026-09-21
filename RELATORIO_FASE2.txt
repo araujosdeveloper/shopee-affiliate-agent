@@ -1,0 +1,180 @@
+RELATÓRIO FINAL — CORREÇÃO DE INTEGRIDADE DA FASE 2
+
+Projeto: shopee-affiliate-agent
+Branch: feat/controlled-ingestion
+PR draft: https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/2
+Base confirmada: a200cc719a4c8ba2a57f22f9376b324478732d04
+
+1. COMMITS E RASTREABILIDADE
+
+- implementation_head: 2c9ea2767e5b163fff785f71edac46c020516f21.
+- report_base: 2c9ea2767e5b163fff785f71edac46c020516f21.
+- Commits novos desta correção final:
+  - 3b9f152 fix: separate snapshot identity from source hash
+  - fd6605b test: cover snapshot provenance conflicts
+  - 2c9ea27 test: isolate source hashes across scenarios
+- commit_documental: commit imediatamente posterior ao report_base; seu SHA não é
+  autorreferenciado e é informado no fechamento após o push.
+- final_pr_head: verificado literalmente após o push documental e informado no
+  fechamento, junto ao workflow executado sobre ele.
+- Workflow validado da implementação: validate 35643280516, SUCCESS.
+
+2. CORREÇÕES ENTREGUES
+
+Oportunidades:
+
+- migration incremental 20260921_0006, sem alteração da 0005;
+- vínculos, score mínimo, score consistente e proveniência continuam protegidos;
+- produto ativo, snapshot disponível, não futuro e válido são exigidos na criação
+  e em candidate -> shortlisted;
+- candidate -> dismissed não revalida frescor, atividade ou disponibilidade;
+- candidate -> expired exige expires_at <= now();
+- estados terminalizados não possuem transição de saída;
+- expires_at é invariavelmente snapshot.collected_at + 60 minutos;
+- geração é rejeitada quando não resta validade da evidência.
+
+Proveniência:
+
+- POST /api/v1/products cria somente manual e não expõe source no schema;
+- snapshot genérico aceita somente produto manual;
+- official_import é produzido somente pelo fluxo CSV do operador;
+- approved_api permanece enum inativo e nenhuma rota o cria;
+- source_payload_hash aceita somente SHA-256 hexadecimal de 64 caracteres e é
+  normalizado para minúsculas.
+
+Idempotência:
+
+- idempotency_records persiste chave global, operação, entidade, ator e fingerprint
+  canônico do payload;
+- replay é verificado antes de versionamento e transições;
+- mesma requisição retorna o recurso sem mutação, nova versão ou nova auditoria;
+- colisões de operação, entidade, ator ou payload retornam idempotency_conflict;
+- identificadores de path integram o contexto idempotente, inclusive product_id de
+  snapshots e assessments;
+- advisory lock transacional por chave fecha a corrida entre requests concorrentes;
+- auditoria permanece append-only.
+
+Identidade de snapshots:
+
+- source_payload_hash preserva somente o hash declarado pela fonte;
+- source_payload_hash permanece NULL quando a fonte não o fornece;
+- a identidade determinística interna é canonical:{canonical_sha256(normalized)};
+- canonical_sha256 usa os dados normalizados sem source_payload_hash, portanto a
+  identidade interna independe da presença ou valor do hash externo;
+- nova Idempotency-Key HTTP com a mesma evidência retorna o snapshot existente;
+- identidade canônica igual com hashes externos diferentes, inclusive alternância
+  entre NULL e hash, retorna source_payload_hash_conflict;
+- reutilização do hash declarado com conteúdo diferente retorna
+  source_payload_hash_conflict;
+- conflitos não atualizam snapshots imutáveis, não duplicam recursos e não
+  persistem auditoria ou idempotency_record da requisição rejeitada;
+- a chave HTTP permanece somente em idempotency_records e na auditoria.
+
+Entrega durável:
+
+- import_outbox é gravada na mesma transação do ImportBatch e ImportRow;
+- estados pending, published, completed e failed, tentativas, próxima tentativa,
+  backoff limitado e erro sanitizado;
+- dispatcher periódico usa SELECT FOR UPDATE SKIP LOCKED;
+- publicação Celery possui retry habilitado e limitado;
+- worker permanece concurrency=1;
+- processamento usa advisory lock por lote;
+- tarefa repetida após terminalização é no-op;
+- batch_locked é tratado pela task como concorrência segura e não marca o lote como
+  failed enquanto outro worker o processa;
+- cancelamento terminaliza a intenção e impede processamento posterior;
+- esgotamento de tentativas abre OperationalAlert e transições são auditadas.
+
+Isolamento por linha:
+
+- process_batch usa savepoint por ImportRow;
+- somente erros esperados de normalização e SQLAlchemy são capturados;
+- apenas a linha defeituosa sofre rollback;
+- códigos e mensagens persistidos são estáveis e sanitizados;
+- contagens e estados completed, partially_completed e failed são derivados dos
+  resultados finais das linhas.
+
+3. MIGRATIONS
+
+- Nova migration: 20260921_0006_integrity_correction.py.
+- Upgrade vazio até head: aprovado na CI.
+- Upgrade 0005 -> 0006: aprovado na CI.
+- Downgrade 0006 -> 0005: aprovado na CI.
+- Novo upgrade até head: aprovado na CI.
+- Downgrade completo e novo upgrade completo: aprovado na CI.
+- SQL offline de upgrade e downgrade 0006 -> 0005: aprovado na CI.
+
+4. TESTES ADICIONADOS
+
+- validade e expiração da evidência no trigger PostgreSQL;
+- impossibilidade de estender expires_at além de collected_at + 60 minutos;
+- processamento integrado manual até oportunidade, shortlist, dismiss, expired,
+  OperationalAlert e AuditEvent, com registros consultados diretamente no banco;
+- violação PostgreSQL em uma linha seguida de processamento da linha seguinte;
+- validação e normalização de source_payload_hash;
+- ausência de source no schema manual;
+- configuração de retry limitado da outbox e worker concurrency=1;
+- presença das tabelas idempotency_records e import_outbox.
+- replay, payload divergente, parent/entidade divergente e ator divergente nas
+  mutações de produto, snapshot, importação, assessment, score, oportunidade,
+  shortlist, dismiss, acknowledge e resolve;
+- transação conjunta de ImportBatch, ImportRow e ImportOutbox;
+- falha de broker, backoff, recuperação failed -> published -> completed, quinta
+  falha, alerta único, cancelamento e tarefa repetida;
+- concorrência com SELECT FOR UPDATE SKIP LOCKED e advisory lock por lote;
+- batch_locked sem falso failed pelo ImportTask.
+- canonical_sha256 invariável sem hash, com o mesmo hash e com hashes externos
+  diferentes;
+- persistência NULL sem hash declarado e deduplicação com nova Idempotency-Key;
+- conflitos para mesma identidade com hashes diferentes, alternância NULL/hash e
+  mesmo hash com preço, disponibilidade ou collected_at divergentes;
+- aplicação da mesma política no fluxo CSV official_import;
+- ausência de snapshot, auditoria e idempotency_record adicionais nos conflitos.
+
+Contagem validada:
+
+- 53 testes unitários aprovados;
+- 83 testes completos aprovados, com 2 warnings não bloqueantes.
+
+5. VALIDAÇÕES
+
+Workflow validate 35643280516, implementation_head 2c9ea2767e5b163fff785f71edac46c020516f21:
+
+- Ruff: aprovado;
+- Mypy strict: aprovado em 27 módulos;
+- testes unitários: 53 aprovados;
+- testes completos PostgreSQL/Redis: 83 aprovados;
+- pip-audit: nenhuma vulnerabilidade conhecida;
+- gitleaks: aprovado;
+- docker compose config e build completo: aprovados;
+- stack com healthchecks: aprovada;
+- migrations progressivas, downgrade e SQL offline: aprovados;
+- backup e restore isolado: aprovado;
+- nenhuma porta publicada e todas as redes internas: confirmado;
+- consumo observado: worker 102,7 MiB, API 71,97 MiB, scheduler 52,4 MiB,
+  PostgreSQL 49,33 MiB e Redis 8,594 MiB, todos dentro dos limites.
+
+A readiness normal é coberta pelo docker compose up --wait. A readiness com Redis
+indisponível é validada pela CI em stack isolada; o script exige HTTP 503,
+`status=not_ready` e `dependencies.redis=unavailable`, e reinicia o Redis via trap.
+
+6. RISCOS RESIDUAIS REAIS
+
+- A autenticação ainda usa Bearer token compartilhado; X-Operator-ID fornece
+  atribuição auditável, mas não autenticação individual forte.
+- A garantia de entrega depende de uma réplica operacional do scheduler; a outbox
+  preserva a intenção durante indisponibilidade do Redis e permite recuperação.
+- A CI emitiu aviso de descontinuação futura do Node.js 20 nas versões atuais de
+  actions/checkout, actions/setup-python e gitleaks-action; não afetou a validação.
+- O contrato approved_api continua propositalmente inativo na Fase 2.
+- O dispatcher depende de uma réplica operacional do scheduler; SKIP LOCKED torna
+  múltiplas execuções seguras, mas não substitui monitoramento do scheduler.
+
+7. GOVERNANÇA
+
+- PR #2 permanece draft e aberta contra main.
+- Nenhum merge, force push ou rebase destrutivo foi realizado.
+- main não foi alterada.
+- Nenhum scraping, acesso automatizado à Shopee, API não oficial, egress de runtime,
+  publicação, mensageria, geração de link, IA generativa ou interface web foi
+  introduzido.

@@ -11,5 +11,9 @@ Principais ameaças e controles:
 - movimento lateral: redes internas, capacidades removidas, non-root na aplicação, no-new-privileges e ausência do Docker socket;
 - cadeia de suprimentos: versões fixadas, imagem base fixa por tag e `pip-audit` no CI;
 - exaustão: limites de CPU/memória, concorrência 1, prefetch 1 e Redis sem eviction.
+- arquivos maliciosos: somente CSV UTF-8, 5 MiB, 10.000 linhas, cabeçalho e allowlist; fórmulas são texto e XLS/XLSX não é aceito;
+- SSRF: URLs são validadas como HTTPS sem credenciais e nunca são seguidas;
+- replay: idempotência por chave, SHA-256 do payload e representação canônica;
+- alteração histórica: snapshots, assessments, scores e auditoria são imutáveis, com transições críticas no PostgreSQL.
 
 Risco residual: Bearer token único não oferece identidade individual; tags de imagem não são imutáveis como digest; logs ainda dependem do acesso ao daemon Docker. Esses pontos devem ser tratados antes de exposição externa.

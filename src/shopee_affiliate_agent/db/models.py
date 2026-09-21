@@ -25,13 +25,21 @@ from shopee_affiliate_agent.db.base import (
     TimestampMixin,
     UUIDPrimaryKeyMixin,
     VersionMixin,
+    utc_now,
 )
 from shopee_affiliate_agent.domain.enums import (
+    AlertSeverity,
+    AlertStatus,
+    AlertType,
     ApprovalStatus,
     CampaignStatus,
     ChannelType,
     ContentStatus,
+    ImportBatchStatus,
+    ImportRowStatus,
     OperatorRole,
+    OpportunityStatus,
+    OutboxStatus,
     ProductSource,
     PublicationStatus,
 )
@@ -266,4 +274,207 @@ class AuditEvent(UUIDPrimaryKeyMixin, Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     event_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class ImportBatch(UUIDPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
+    __tablename__ = "import_batches"
+    __table_args__ = (
+        CheckConstraint(
+            "total_rows >= 0 AND accepted_rows >= 0 AND rejected_rows >= 0 AND duplicate_rows >= 0",
+            name="non_negative_counts",
+        ),
+    )
+    source: Mapped[ProductSource] = mapped_column(
+        Enum(
+            ProductSource,
+            name="product_source",
+            values_callable=lambda enum: [e.value for e in enum],
+        )
+    )
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str] = mapped_column(String(100))
+    payload_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[ImportBatchStatus] = mapped_column(
+        Enum(
+            ImportBatchStatus,
+            name="import_batch_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        )
+    )
+    total_rows: Mapped[int] = mapped_column(default=0)
+    accepted_rows: Mapped[int] = mapped_column(default=0)
+    rejected_rows: Mapped[int] = mapped_column(default=0)
+    duplicate_rows: Mapped[int] = mapped_column(default=0)
+    requested_by_id: Mapped[UUID] = mapped_column(ForeignKey("operators.id", ondelete="RESTRICT"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class ImportRow(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "import_rows"
+    __table_args__ = (
+        UniqueConstraint("import_batch_id", "row_number"),
+        Index("ix_import_rows_hash", "row_sha256"),
+    )
+    import_batch_id: Mapped[UUID] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="RESTRICT")
+    )
+    row_number: Mapped[int]
+    external_id: Mapped[str] = mapped_column(String(255))
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSON)
+    normalized_data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[ImportRowStatus] = mapped_column(
+        Enum(
+            ImportRowStatus,
+            name="import_row_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        )
+    )
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    product_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("products.id", ondelete="RESTRICT"), nullable=True
+    )
+    product_snapshot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("product_snapshots.id", ondelete="RESTRICT"), nullable=True
+    )
+    row_sha256: Mapped[str] = mapped_column(String(64))
+
+
+class IdempotencyRecord(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "idempotency_records"
+    __table_args__ = (UniqueConstraint("idempotency_key"),)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    operation: Mapped[str] = mapped_column(String(120))
+    entity_type: Mapped[str] = mapped_column(String(80))
+    entity_id: Mapped[UUID] = mapped_column(nullable=False)
+    actor_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("operators.id", ondelete="RESTRICT"), nullable=True
+    )
+    payload_fingerprint: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ImportOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "import_outbox"
+    __table_args__ = (UniqueConstraint("import_batch_id", "task_name"),)
+    import_batch_id: Mapped[UUID] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="RESTRICT")
+    )
+    task_name: Mapped[str] = mapped_column(String(120))
+    status: Mapped[OutboxStatus] = mapped_column(
+        Enum(
+            OutboxStatus, name="outbox_status", values_callable=lambda enum: [e.value for e in enum]
+        )
+    )
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class ProductAssessment(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "product_assessments"
+    __table_args__ = tuple(
+        CheckConstraint(f"{name} BETWEEN 0 AND 100", name=f"{name}_range")
+        for name in (
+            "conversion_potential",
+            "net_commission",
+            "product_quality",
+            "price_stock_stability",
+            "niche_fit",
+            "video_demonstration_potential",
+            "cancellation_quality",
+        )
+    )
+    product_id: Mapped[UUID] = mapped_column(ForeignKey("products.id", ondelete="RESTRICT"))
+    product_snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey("product_snapshots.id", ondelete="RESTRICT")
+    )
+    conversion_potential: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    net_commission: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    product_quality: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    price_stock_stability: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    niche_fit: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    video_demonstration_potential: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    cancellation_quality: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    assessed_by_id: Mapped[UUID] = mapped_column(ForeignKey("operators.id", ondelete="RESTRICT"))
+    rule_version: Mapped[str] = mapped_column(String(80))
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ProductScore(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "product_scores"
+    __table_args__ = (CheckConstraint("total_score BETWEEN 0 AND 100", name="total_score_range"),)
+    product_id: Mapped[UUID] = mapped_column(ForeignKey("products.id", ondelete="RESTRICT"))
+    product_snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey("product_snapshots.id", ondelete="RESTRICT")
+    )
+    product_assessment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("product_assessments.id", ondelete="RESTRICT")
+    )
+    rule_version: Mapped[str] = mapped_column(String(80))
+    weights: Mapped[dict[str, Any]] = mapped_column(JSON)
+    components: Mapped[dict[str, Any]] = mapped_column(JSON)
+    total_score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class ProductOpportunity(UUIDPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
+    __tablename__ = "product_opportunities"
+    __table_args__ = (CheckConstraint("score BETWEEN 0 AND 100", name="score_range"),)
+    product_id: Mapped[UUID] = mapped_column(ForeignKey("products.id", ondelete="RESTRICT"))
+    product_snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey("product_snapshots.id", ondelete="RESTRICT")
+    )
+    product_score_id: Mapped[UUID] = mapped_column(
+        ForeignKey("product_scores.id", ondelete="RESTRICT")
+    )
+    status: Mapped[OpportunityStatus] = mapped_column(
+        Enum(
+            OpportunityStatus,
+            name="opportunity_status",
+            values_callable=lambda enum: [e.value for e in enum],
+        )
+    )
+    score: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    reason_codes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    shortlisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class OperationalAlert(UUIDPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
+    __tablename__ = "operational_alerts"
+    alert_type: Mapped[AlertType] = mapped_column(
+        Enum(AlertType, name="alert_type", values_callable=lambda enum: [e.value for e in enum])
+    )
+    severity: Mapped[AlertSeverity] = mapped_column(
+        Enum(
+            AlertSeverity,
+            name="alert_severity",
+            values_callable=lambda enum: [e.value for e in enum],
+        )
+    )
+    entity_type: Mapped[str] = mapped_column(String(80))
+    entity_id: Mapped[UUID]
+    message: Mapped[str] = mapped_column(String(500))
+    status: Mapped[AlertStatus] = mapped_column(
+        Enum(AlertStatus, name="alert_status", values_callable=lambda enum: [e.value for e in enum])
+    )
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_by_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("operators.id", ondelete="RESTRICT"), nullable=True
+    )
     idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)

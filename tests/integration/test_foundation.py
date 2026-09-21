@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -245,6 +245,28 @@ def test_database_blocks_publication_without_current_compliant_evidence() -> Non
             )
             session.commit()
 
+        def insert_snapshot(collected_at: datetime) -> object:
+            new_snapshot_id = uuid4()
+            session.execute(
+                text(
+                    """
+                    INSERT INTO product_snapshots
+                        (id, product_id, source, price, currency, available, collected_at,
+                         idempotency_key, created_at, updated_at)
+                    VALUES (:id, :product_id, 'manual', 10.00, 'BRL', true, :collected_at,
+                            :key, now(), now())
+                    """
+                ),
+                {
+                    "id": new_snapshot_id,
+                    "product_id": product_id,
+                    "collected_at": collected_at,
+                    "key": f"snapshot-{new_snapshot_id}",
+                },
+            )
+            session.commit()
+            return new_snapshot_id
+
         with pytest.raises(DBAPIError):
             insert_publication(is_automatic=False, key=f"pending-{uuid4()}")
         session.rollback()
@@ -265,29 +287,22 @@ def test_database_blocks_publication_without_current_compliant_evidence() -> Non
                 publication_snapshot_id=other_snapshot_id,
             )
         session.rollback()
-        session.execute(
-            text(
-                "UPDATE product_snapshots SET collected_at = now() + interval '1 second' "
-                "WHERE id = :id"
-            ),
-            {"id": snapshot_id},
-        )
-        session.commit()
+        future_snapshot_id = insert_snapshot(datetime.now(UTC) + timedelta(seconds=30))
         with pytest.raises(DBAPIError, match="product snapshot timestamp is in the future"):
-            insert_publication(is_automatic=False, key=f"future-{uuid4()}")
+            insert_publication(
+                is_automatic=False,
+                key=f"future-{uuid4()}",
+                publication_snapshot_id=future_snapshot_id,
+            )
         session.rollback()
-        session.execute(
-            text("UPDATE product_snapshots SET collected_at = :collected_at WHERE id = :id"),
-            {"id": snapshot_id, "collected_at": datetime.now(UTC) - PRICE_VALIDATION_MAX_AGE},
-        )
-        session.commit()
+        stale_snapshot_id = insert_snapshot(datetime.now(UTC) - PRICE_VALIDATION_MAX_AGE)
         with pytest.raises(DBAPIError):
-            insert_publication(is_automatic=False, key=f"expired-{uuid4()}")
+            insert_publication(
+                is_automatic=False,
+                key=f"expired-{uuid4()}",
+                publication_snapshot_id=stale_snapshot_id,
+            )
         session.rollback()
-        session.execute(
-            text("UPDATE product_snapshots SET collected_at = now() WHERE id = :id"),
-            {"id": snapshot_id},
-        )
         session.execute(
             text("UPDATE content_items SET version = 2 WHERE id = :id"), {"id": content_id}
         )
@@ -295,10 +310,6 @@ def test_database_blocks_publication_without_current_compliant_evidence() -> Non
         with pytest.raises(DBAPIError):
             insert_publication(is_automatic=False, key=f"version-{uuid4()}")
         session.rollback()
-        session.execute(
-            text("UPDATE product_snapshots SET collected_at = now() WHERE id = :id"),
-            {"id": snapshot_id},
-        )
         session.execute(
             text("UPDATE approval_requests SET content_version = 2 WHERE id = :id"),
             {"id": approval_id},

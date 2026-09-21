@@ -1,8 +1,10 @@
 # Visão geral da arquitetura
 
-A Fase 1 é deliberadamente fechada. API e worker compartilham apenas a rede interna `shopee_core` com PostgreSQL e Redis. O serviço efêmero de migração também usa `shopee_ops`. Nenhuma rede tem saída externa e nenhuma porta é publicada no host.
+A Fase 2 permanece deliberadamente fechada. API, worker e Celery Beat compartilham apenas a rede interna `shopee_core` com PostgreSQL e Redis. O serviço efêmero de migração também usa `shopee_ops`. Nenhuma porta é publicada no host.
 
-O FastAPI expõe liveness, readiness e status interno. O worker Celery tem concorrência 1, serialização JSON e nenhuma tarefa de integração. O PostgreSQL mantém o estado transacional e a trilha append-only; o Redis atende broker, backend e readiness. A migração executa com credencial separada da aplicação.
+O FastAPI expõe liveness, readiness e a API autenticada. O worker Celery tem concorrência 1, ack após persistência, retry limitado e processa somente dados recebidos. O Beat executa rotinas internas a cada 15 minutos. PostgreSQL mantém estado, snapshots históricos, scores imutáveis e auditoria append-only; Redis atende broker, backend e readiness.
+
+O fluxo é `fonte autorizada → ImportBatch/ImportRow → Product/ProductSnapshot → ProductAssessment → ProductScore → ProductOpportunity`. Ranking usa allowlist e desempate determinístico. Shortlist e descarte são exclusivamente humanos e oportunidade alguma produz publicação.
 
 Snapshots preservam a origem autorizada do dado e as aprovações registram a versão exata do conteúdo analisado. A autorização de publicação verifica essas relações no domínio e no banco; alterar o conteúdo depois da aprovação invalida a decisão anterior.
 
