@@ -1,0 +1,264 @@
+RELATÓRIO FINAL — FASE 2
+INGESTÃO CONTROLADA E INTELIGÊNCIA COMERCIAL
+
+Projeto: shopee-affiliate-agent
+Branch: feat/controlled-ingestion
+Commit head: d8d777ec6ed8d06e0790214970c1a4da446a1a59
+PR draft: https://github.com/araujosdeveloper/shopee-affiliate-agent/pull/2
+CI: https://github.com/araujosdeveloper/shopee-affiliate-agent/actions/runs/35552812084
+
+1. RESUMO EXECUTIVO
+
+A Fase 2 foi implementada e entregue em uma PR draft destinada à main, sem merge.
+O sistema agora suporta ingestão manual e importação de CSV oficial fornecido pelo
+operador, com normalização determinística, idempotência, deduplicação, snapshots
+históricos, assessments comerciais, scores imutáveis, ranking, oportunidades e
+alertas internos.
+
+A fonte approved_api existe somente como contrato e fronteira arquitetural. Nenhuma
+chamada externa foi implementada.
+
+O worktree estava limpo e sincronizado com a branch remota ao final da entrega.
+
+2. ARQUITETURA IMPLEMENTADA
+
+Fluxo determinístico:
+
+fonte autorizada
+  -> ImportBatch / ImportRow
+  -> Product / ProductSnapshot
+  -> ProductAssessment
+  -> ProductScore
+  -> ProductOpportunity / OperationalAlert
+
+Principais características:
+
+- ingestão manual funcional;
+- CSV official_import fornecido exclusivamente pelo operador;
+- approved_api sem execução de chamadas externas;
+- normalização determinística e validação UTF-8;
+- hashes SHA-256 de payload e representação canônica;
+- idempotência e deduplicação de produtos e snapshots;
+- processamento Celery com concorrência 1;
+- scoring determinístico com sete dimensões Decimal;
+- ranking com filtros, paginação e ordenação em allowlist;
+- oportunidades históricas e decisões humanas;
+- alertas operacionais internos;
+- auditoria append-only;
+- constraints e triggers PostgreSQL para defesa em profundidade.
+
+3. ENTIDADES CRIADAS
+
+- ImportBatch
+- ImportRow
+- ProductAssessment
+- ProductScore
+- ProductOpportunity
+- OperationalAlert
+
+Product permanece único por source + external_id. ProductSnapshot preserva o
+histórico comercial. Assessments, scores e snapshots são protegidos contra
+alteração. Entidades mutáveis usam versionamento otimista.
+
+4. MIGRATIONS
+
+Migration criada:
+
+- 20260921_0005_controlled_ingestion
+
+Validações executadas:
+
+- upgrade de banco vazio até head;
+- upgrade do banco existente da Fase 1;
+- downgrade de 0005 para 0004;
+- downgrade completo até base;
+- upgrade progressivo até 0004 e depois até head;
+- geração offline do SQL de upgrade e downgrade.
+
+A migration adiciona constraints e triggers para ranges, estados, contagens,
+timestamps, compatibilidade entre produto, snapshot, assessment, score e
+oportunidade, imutabilidade e transições válidas.
+
+5. ENDPOINTS IMPLEMENTADOS
+
+Produtos e snapshots:
+
+- POST /api/v1/products
+- GET /api/v1/products
+- GET /api/v1/products/{product_id}
+- PATCH /api/v1/products/{product_id}
+- POST /api/v1/products/{product_id}/snapshots
+- GET /api/v1/products/{product_id}/snapshots
+
+Importações:
+
+- POST /api/v1/imports/manual
+- POST /api/v1/imports/official
+- GET /api/v1/imports
+- GET /api/v1/imports/{import_batch_id}
+- GET /api/v1/imports/{import_batch_id}/rows
+- POST /api/v1/imports/{import_batch_id}/cancel
+
+Assessments e scores:
+
+- POST /api/v1/products/{product_id}/assessments
+- GET /api/v1/products/{product_id}/assessments
+- POST /api/v1/assessments/{assessment_id}/score
+- GET /api/v1/products/{product_id}/scores
+
+Oportunidades:
+
+- POST /api/v1/scores/{score_id}/opportunities
+- GET /api/v1/opportunities
+- GET /api/v1/opportunities/{opportunity_id}
+- POST /api/v1/opportunities/{opportunity_id}/shortlist
+- POST /api/v1/opportunities/{opportunity_id}/dismiss
+
+Alertas:
+
+- GET /api/v1/alerts
+- GET /api/v1/alerts/{alert_id}
+- POST /api/v1/alerts/{alert_id}/acknowledge
+- POST /api/v1/alerts/{alert_id}/resolve
+
+Todos os endpoints /api/v1 permanecem autenticados. Mutações aplicáveis exigem
+Idempotency-Key. Ações humanas exigem X-Operator-ID. Atualizações usam optimistic
+locking. O OpenAPI contém 24 paths.
+
+6. CELERY E SCHEDULER
+
+Tarefas:
+
+- phase2.process_import
+- phase2.expire_opportunities
+
+O worker utiliza concorrência 1, prefetch 1, ack tardio, timeout, retry limitado,
+backoff exponencial e jitter.
+
+O Celery Beat é um serviço separado e executa a cada 15 minutos. Ele expira
+oportunidades vencidas, abre alertas de snapshots vencidos relacionados a
+oportunidades ativas e resolve alertas quando a condição deixa de existir.
+
+Limites do scheduler:
+
+- memória: 128 MiB;
+- CPU: 0,10;
+- sem porta publicada;
+- filesystem read-only;
+- usuário não root;
+- cap_drop ALL;
+- no-new-privileges;
+- rede interna.
+
+7. RESULTADOS DOS TESTES E QUALIDADE
+
+- Ruff: aprovado.
+- Mypy strict: aprovado em 26 módulos.
+- Pytest unitário local: 49 testes aprovados.
+- Pytest completo na CI: 57 testes aprovados, com 2 warnings.
+- Os 35 testes da Fase 1 foram preservados.
+- pip-audit: nenhuma vulnerabilidade conhecida.
+- Gitleaks: nenhum vazamento encontrado.
+- docker compose config: aprovado.
+- Build completo dos containers: aprovado.
+- Healthchecks de PostgreSQL, Redis, API, worker e scheduler: aprovados.
+- Testes de integração: aprovados.
+- Backup e restore isolado: aprovado.
+- Migrations progressivas: aprovadas.
+- Ausência de portas publicadas: confirmada.
+- Redes internas: confirmadas.
+
+Checks obrigatórios:
+
+- quality-and-unit-tests: SUCCESS, duração de 1 minuto e 4 segundos.
+- containers-and-integration: SUCCESS, duração de 2 minutos e 2 segundos.
+
+8. BACKUP E RESTORE
+
+O workflow criou um backup no ambiente isolado da CI e executou o restore em um
+banco temporário, sem substituir o banco usado pela aplicação. Resultado:
+
+- Isolated restore test passed.
+
+9. CONSUMO DOS CONTAINERS
+
+Medição registrada na CI:
+
+- API:        0,11% CPU; 70,84 MiB / 384 MiB.
+- Worker:     0,13% CPU; 64,94 MiB / 512 MiB.
+- Scheduler:  2,83% CPU; 51,93 MiB / 128 MiB.
+- Redis:      0,41% CPU; 8,824 MiB / 128 MiB.
+- PostgreSQL: 0,04% CPU; 46,51 MiB / 768 MiB.
+
+10. GOVERNANÇA E DOCUMENTAÇÃO
+
+Foram atualizados ou criados:
+
+- AGENTS.md para a Fase 2;
+- workflow para pull requests destinados à main e pushes em main;
+- ADR da ingestão controlada;
+- ADR da política commercial-opportunity-v1;
+- contrato do CSV official_import;
+- arquitetura e modelo de dados;
+- threat model;
+- política de retenção de ImportRow.raw_data;
+- runbook de importação;
+- runbook de falhas;
+- runbook do scheduler;
+- documentação do OpenAPI;
+- README;
+- roadmap.
+
+11. PROTEÇÃO DA MAIN
+
+A proteção da main e os rulesets foram consultados pela GitHub CLI. Ambos
+retornaram HTTP 403, informando que o repositório privado exige GitHub Pro ou que
+o repositório seja tornado público para habilitar o recurso.
+
+A limitação foi documentada e não foi contornada. Quando o recurso estiver
+disponível, a main deverá exigir:
+
+- quality-and-unit-tests;
+- containers-and-integration.
+
+Não deve ser criada exigência impossível de aprovação por terceiros, pois o
+repositório pertence a um único operador.
+
+12. COMMITS DA ENTREGA
+
+- 6f95020 feat: add controlled ingestion domain schema
+- db4193e feat: implement deterministic controlled ingestion
+- 27ed214 feat: add scoring opportunities and internal scheduler
+- f0f7a50 feat: expose authenticated phase two API
+- 4152112 docs: document controlled ingestion operations
+- d8d777 ci: validate migrations backup and isolation
+
+13. RISCOS RESIDUAIS
+
+- A autenticação ainda usa Bearer token compartilhado. X-Operator-ID registra o
+  ator, mas não substitui autenticação individual forte.
+- O singleton do Celery Beat depende de manter uma única réplica operacional; não
+  existe lock distribuído.
+- A retenção de ImportRow.raw_data está documentada como 30 dias, mas a rotina
+  automática de descarte sanitizado ainda deverá ser implementada.
+
+14. CONFIRMAÇÕES DE SEGURANÇA E ESCOPO
+
+Confirmado ao final da Fase 2:
+
+- nenhum scraping foi implementado;
+- nenhum acesso automatizado ao site da Shopee foi implementado;
+- nenhuma API não oficial foi implementada;
+- nenhum login automatizado ou tratamento de cookies foi implementado;
+- nenhuma chamada externa de runtime foi implementada;
+- nenhum egress externo foi adicionado ao worker ou scheduler;
+- nenhuma geração de link afiliado foi implementada;
+- nenhuma publicação automática foi habilitada;
+- nenhuma mensageria, Hermes, n8n, Telegram ou WhatsApp foi adicionada;
+- nenhuma IA generativa foi adicionada;
+- nenhuma interface web foi adicionada;
+- nenhuma porta pública ou integração com Traefik foi adicionada;
+- nenhum container, rede, volume ou serviço de outro projeto foi alterado;
+- aprovação humana e auditoria append-only permanecem invariantes.
+
+FIM DO RELATÓRIO
