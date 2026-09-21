@@ -116,6 +116,44 @@ def enqueue_import(session: Session, batch: ImportBatch) -> ImportOutbox:
     return item
 
 
+def find_snapshot_duplicate(
+    session: Session,
+    *,
+    product_id: UUID,
+    source: ProductSource,
+    canonical_digest: str,
+    source_payload_hash: str | None,
+) -> ProductSnapshot | None:
+    snapshot_key = f"canonical:{canonical_digest}"
+    canonical_match = session.scalar(
+        select(ProductSnapshot).where(ProductSnapshot.idempotency_key == snapshot_key)
+    )
+    if canonical_match:
+        if (
+            canonical_match.product_id != product_id
+            or canonical_match.source != source
+            or canonical_match.source_payload_hash != source_payload_hash
+        ):
+            raise DomainError(
+                "source_payload_hash_conflict",
+                "canonical evidence has different source provenance",
+            )
+        return canonical_match
+    if source_payload_hash:
+        source_hash_match = session.scalar(
+            select(ProductSnapshot).where(
+                ProductSnapshot.source == source,
+                ProductSnapshot.source_payload_hash == source_payload_hash,
+            )
+        )
+        if source_hash_match:
+            raise DomainError(
+                "source_payload_hash_conflict",
+                "source payload hash belongs to different canonical evidence",
+            )
+    return None
+
+
 def process_batch(session: Session, batch_id: UUID) -> ImportBatch:
     locked = session.scalar(
         text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": str(batch_id)}
@@ -188,26 +226,16 @@ def process_batch(session: Session, batch_id: UUID) -> ImportBatch:
                     )
                 digest = canonical_sha256(normalized)
                 snapshot_key = f"canonical:{digest}"
-                snapshot = session.scalar(
-                    select(ProductSnapshot).where(ProductSnapshot.idempotency_key == snapshot_key)
+                snapshot = find_snapshot_duplicate(
+                    session,
+                    product_id=product.id,
+                    source=batch.source,
+                    canonical_digest=digest,
+                    source_payload_hash=normalized.source_payload_hash,
                 )
                 if snapshot:
                     row.status = ImportRowStatus.DUPLICATE
                 else:
-                    if normalized.source_payload_hash:
-                        source_hash_conflict = session.scalar(
-                            select(ProductSnapshot).where(
-                                ProductSnapshot.source == batch.source,
-                                ProductSnapshot.source_payload_hash
-                                == normalized.source_payload_hash,
-                                ProductSnapshot.idempotency_key != snapshot_key,
-                            )
-                        )
-                        if source_hash_conflict:
-                            raise DomainError(
-                                "source_payload_hash_conflict",
-                                "source payload hash belongs to different evidence",
-                            )
                     snapshot = ProductSnapshot(
                         product_id=product.id,
                         source=batch.source,
@@ -215,7 +243,7 @@ def process_batch(session: Session, batch_id: UUID) -> ImportBatch:
                         currency=normalized.currency,
                         available=normalized.available,
                         collected_at=normalized.collected_at,
-                        source_payload_hash=normalized.source_payload_hash or digest,
+                        source_payload_hash=normalized.source_payload_hash,
                         idempotency_key=snapshot_key,
                     )
                     session.add(snapshot)

@@ -38,6 +38,21 @@ def test_canonical_hash_is_deterministic() -> None:
     assert canonical_sha256(product) == canonical_sha256(product)
 
 
+def test_canonical_hash_ignores_source_payload_hash() -> None:
+    collected_at = datetime(2026, 1, 1, tzinfo=UTC)
+    without_hash = normalize_product(valid(collected_at=collected_at), ProductSource.MANUAL)
+    first_hash = normalize_product(
+        valid(collected_at=collected_at, source_payload_hash="a" * 64),
+        ProductSource.MANUAL,
+    )
+    second_hash = normalize_product(
+        valid(collected_at=collected_at, source_payload_hash="b" * 64),
+        ProductSource.MANUAL,
+    )
+    assert canonical_sha256(without_hash) == canonical_sha256(first_hash)
+    assert canonical_sha256(first_hash) == canonical_sha256(second_hash)
+
+
 @pytest.mark.parametrize(
     "url",
     [

@@ -123,9 +123,18 @@ def canonical_data(product: NormalizedProduct) -> dict[str, Any]:
     return result
 
 
+def canonical_identity_data(product: NormalizedProduct) -> dict[str, Any]:
+    result = canonical_data(product)
+    result.pop("source_payload_hash", None)
+    return result
+
+
 def canonical_sha256(product: NormalizedProduct) -> str:
     value = json.dumps(
-        canonical_data(product), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        canonical_identity_data(product),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
     )
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 

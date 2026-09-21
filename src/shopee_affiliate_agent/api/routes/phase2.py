@@ -53,6 +53,7 @@ from shopee_affiliate_agent.services.ingestion import (
     add_rows,
     create_batch,
     enqueue_import,
+    find_snapshot_duplicate,
     process_batch,
 )
 from shopee_affiliate_agent.services.normalization import (
@@ -240,8 +241,12 @@ def create_snapshot(
     )
     digest = canonical_sha256(normalized)
     snapshot_key = f"canonical:{digest}"
-    duplicate = session.scalar(
-        select(ProductSnapshot).where(ProductSnapshot.idempotency_key == snapshot_key)
+    duplicate = find_snapshot_duplicate(
+        session,
+        product_id=product.id,
+        source=product.source,
+        canonical_digest=digest,
+        source_payload_hash=normalized.source_payload_hash,
     )
     if duplicate:
         record(
@@ -255,16 +260,6 @@ def create_snapshot(
         )
         session.commit()
         return duplicate
-    if normalized.source_payload_hash:
-        source_hash_conflict = session.scalar(
-            select(ProductSnapshot).where(
-                ProductSnapshot.source == product.source,
-                ProductSnapshot.source_payload_hash == normalized.source_payload_hash,
-                ProductSnapshot.idempotency_key != snapshot_key,
-            )
-        )
-        if source_hash_conflict:
-            raise HTTPException(status_code=409, detail="source_payload_hash_conflict")
     snapshot = ProductSnapshot(
         product_id=product.id,
         source=product.source,
@@ -272,7 +267,7 @@ def create_snapshot(
         currency=normalized.currency,
         available=normalized.available,
         collected_at=normalized.collected_at,
-        source_payload_hash=normalized.source_payload_hash or digest,
+        source_payload_hash=normalized.source_payload_hash,
         idempotency_key=snapshot_key,
     )
     session.add(snapshot)
