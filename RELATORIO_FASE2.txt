@@ -7,16 +7,17 @@ Base confirmada: a200cc719a4c8ba2a57f22f9376b324478732d04
 
 1. COMMITS E RASTREABILIDADE
 
-- implementation_head: f18579d1179eec3f2d665b7312f9036c80240ad5.
-- report_base: f18579d1179eec3f2d665b7312f9036c80240ad5.
+- implementation_head: 2c9ea2767e5b163fff785f71edac46c020516f21.
+- report_base: 2c9ea2767e5b163fff785f71edac46c020516f21.
 - Commits novos desta correção final:
-  - c6603f4 fix: scope idempotency and snapshot identity
-  - f18579d test: cover idempotency and outbox concurrency
+  - 3b9f152 fix: separate snapshot identity from source hash
+  - fd6605b test: cover snapshot provenance conflicts
+  - 2c9ea27 test: isolate source hashes across scenarios
 - commit_documental: commit imediatamente posterior ao report_base; seu SHA não é
   autorreferenciado e é informado no fechamento após o push.
 - final_pr_head: verificado literalmente após o push documental e informado no
   fechamento, junto ao workflow executado sobre ele.
-- Workflow validado da implementação: validate 35633863773, SUCCESS.
+- Workflow validado da implementação: validate 35643280516, SUCCESS.
 
 2. CORREÇÕES ENTREGUES
 
@@ -56,10 +57,17 @@ Idempotência:
 Identidade de snapshots:
 
 - source_payload_hash preserva somente o hash declarado pela fonte;
+- source_payload_hash permanece NULL quando a fonte não o fornece;
 - a identidade determinística interna é canonical:{canonical_sha256(normalized)};
+- canonical_sha256 usa os dados normalizados sem source_payload_hash, portanto a
+  identidade interna independe da presença ou valor do hash externo;
 - nova Idempotency-Key HTTP com a mesma evidência retorna o snapshot existente;
+- identidade canônica igual com hashes externos diferentes, inclusive alternância
+  entre NULL e hash, retorna source_payload_hash_conflict;
 - reutilização do hash declarado com conteúdo diferente retorna
   source_payload_hash_conflict;
+- conflitos não atualizam snapshots imutáveis, não duplicam recursos e não
+  persistem auditoria ou idempotency_record da requisição rejeitada;
 - a chave HTTP permanece somente em idempotency_records e na auditoria.
 
 Entrega durável:
@@ -115,20 +123,27 @@ Isolamento por linha:
   falha, alerta único, cancelamento e tarefa repetida;
 - concorrência com SELECT FOR UPDATE SKIP LOCKED e advisory lock por lote;
 - batch_locked sem falso failed pelo ImportTask.
+- canonical_sha256 invariável sem hash, com o mesmo hash e com hashes externos
+  diferentes;
+- persistência NULL sem hash declarado e deduplicação com nova Idempotency-Key;
+- conflitos para mesma identidade com hashes diferentes, alternância NULL/hash e
+  mesmo hash com preço, disponibilidade ou collected_at divergentes;
+- aplicação da mesma política no fluxo CSV official_import;
+- ausência de snapshot, auditoria e idempotency_record adicionais nos conflitos.
 
 Contagem validada:
 
-- 52 testes unitários aprovados;
-- 73 testes completos aprovados, com 2 warnings não bloqueantes.
+- 53 testes unitários aprovados;
+- 83 testes completos aprovados, com 2 warnings não bloqueantes.
 
 5. VALIDAÇÕES
 
-Workflow validate 35633863773, implementation_head f18579d:
+Workflow validate 35643280516, implementation_head 2c9ea2767e5b163fff785f71edac46c020516f21:
 
 - Ruff: aprovado;
 - Mypy strict: aprovado em 27 módulos;
-- testes unitários: 52 aprovados;
-- testes completos PostgreSQL/Redis: 73 aprovados;
+- testes unitários: 53 aprovados;
+- testes completos PostgreSQL/Redis: 83 aprovados;
 - pip-audit: nenhuma vulnerabilidade conhecida;
 - gitleaks: aprovado;
 - docker compose config e build completo: aprovados;
