@@ -69,3 +69,10 @@ def test_rejects_invalid_commercial_values(price: object) -> None:
 def test_utf8_validation() -> None:
     with pytest.raises(NormalizationError):
         normalize_text("\ud800", "title", required=True)
+
+
+def test_source_payload_hash_is_validated_and_normalized() -> None:
+    normalized = normalize_product(valid(source_payload_hash="A" * 64), ProductSource.MANUAL)
+    assert normalized.source_payload_hash == "a" * 64
+    with pytest.raises(NormalizationError, match="64-character SHA-256"):
+        normalize_product(valid(source_payload_hash="not-a-sha256"), ProductSource.MANUAL)

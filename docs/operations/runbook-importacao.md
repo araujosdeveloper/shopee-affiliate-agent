@@ -7,3 +7,7 @@
 5. Corrija rejeições na origem. Nunca inclua segredos, cookies ou dados de compradores.
 
 Cadastro manual usa `/api/v1/imports/manual` e nunca infere `official_import`.
+
+A importação oficial grava a intenção em `import_outbox` na mesma transação do lote
+e das linhas. O dispatcher periódico publica tarefas pendentes com backoff limitado;
+itens concluídos são no-op e o limite de tentativas abre alerta operacional.

@@ -55,11 +55,16 @@ jobs:
         run: docker compose --profile test run --rm test pytest -p no:cacheprovider
       - name: Validate migration boundaries
         run: |
-          docker compose run --rm migrate alembic downgrade 20260920_0004
+          docker compose run --rm migrate alembic downgrade 20260921_0005
+          docker compose run --rm migrate alembic upgrade 20260921_0006
+          docker compose run --rm migrate alembic downgrade 20260921_0005
           docker compose run --rm migrate alembic upgrade head
           docker compose run --rm migrate alembic downgrade base
-          docker compose run --rm migrate alembic upgrade 20260920_0004
           docker compose run --rm migrate alembic upgrade head
+      - name: Validate offline migration SQL
+        run: |
+          docker compose run --rm migrate alembic upgrade head --sql > /tmp/phase2-upgrade.sql
+          docker compose run --rm migrate alembic downgrade 20260921_0006:20260921_0005 --sql > /tmp/phase2-downgrade.sql
       - name: Validate isolated backup and restore
         run: |
           mkdir -p /tmp/shopee-affiliate-agent-backups
