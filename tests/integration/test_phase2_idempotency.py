@@ -140,7 +140,7 @@ def test_snapshot_parent_scope_canonical_dedup_and_source_hash_conflict() -> Non
             currency="BRL",
             available=True,
             collected_at=datetime.now(UTC),
-            source_payload_hash="a" * 64,
+            source_payload_hash=uuid4().hex * 2,
         )
         key = f"snapshot-{uuid4()}"
         snapshot = create_snapshot(first_product.id, body, session, operator, key)
@@ -201,6 +201,12 @@ def test_snapshot_source_hash_conflicts_are_atomic(
     updates: dict[str, object],
 ) -> None:
     operator = create_operator()
+    primary_hash = uuid4().hex * 2
+    secondary_hash = uuid4().hex * 2
+    existing_hash = primary_hash if existing_hash is not None else None
+    new_hash = (
+        None if new_hash is None else secondary_hash if new_hash == "b" * 64 else primary_hash
+    )
     with SessionFactory() as session:
         product = create_product(
             ProductCreate(external_id=str(uuid4()), title="Source evidence"),
@@ -241,6 +247,7 @@ def test_snapshot_canonical_dedupe_preserves_optional_source_hash(
     source_hash: str | None,
 ) -> None:
     operator = create_operator()
+    source_hash = uuid4().hex * 2 if source_hash is not None else None
     with SessionFactory() as session:
         product = create_product(
             ProductCreate(external_id=str(uuid4()), title="Canonical evidence"),
