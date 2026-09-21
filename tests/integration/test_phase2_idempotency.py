@@ -4,7 +4,6 @@ from io import BytesIO
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import func, select, text
 from starlette.datastructures import Headers, UploadFile
 
@@ -34,6 +33,7 @@ from shopee_affiliate_agent.api.schemas import (
 )
 from shopee_affiliate_agent.db.models import (
     AuditEvent,
+    IdempotencyRecord,
     ImportBatch,
     OperationalAlert,
     Product,
@@ -44,6 +44,7 @@ from shopee_affiliate_agent.db.models import (
 )
 from shopee_affiliate_agent.db.session import SessionFactory
 from shopee_affiliate_agent.services.commerce import DomainError
+from shopee_affiliate_agent.services.ingestion import process_batch
 from shopee_affiliate_agent.worker import process_import_task
 
 pytestmark = pytest.mark.integration
@@ -168,7 +169,7 @@ def test_snapshot_parent_scope_canonical_dedup_and_source_hash_conflict() -> Non
         )
         assert deduped.id == snapshot.id
         assert count(session, ProductSnapshot) == snapshot_count
-        with pytest.raises(HTTPException) as conflict:
+        with pytest.raises(DomainError) as conflict:
             create_snapshot(
                 first_product.id,
                 body.model_copy(update={"price": Decimal("11.00")}),
@@ -176,8 +177,90 @@ def test_snapshot_parent_scope_canonical_dedup_and_source_hash_conflict() -> Non
                 operator,
                 f"snapshot-conflict-{uuid4()}",
             )
-        assert conflict.value.status_code == 409
-        assert conflict.value.detail == "source_payload_hash_conflict"
+        assert conflict.value.code == "source_payload_hash_conflict"
+
+
+@pytest.mark.parametrize(
+    ("existing_hash", "new_hash", "updates"),
+    [
+        (None, "a" * 64, {}),
+        ("a" * 64, None, {}),
+        ("a" * 64, "b" * 64, {}),
+        ("a" * 64, "a" * 64, {"price": Decimal("11.00")}),
+        ("a" * 64, "a" * 64, {"available": False}),
+        (
+            "a" * 64,
+            "a" * 64,
+            {"collected_at": datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC)},
+        ),
+    ],
+)
+def test_snapshot_source_hash_conflicts_are_atomic(
+    existing_hash: str | None,
+    new_hash: str | None,
+    updates: dict[str, object],
+) -> None:
+    operator = create_operator()
+    with SessionFactory() as session:
+        product = create_product(
+            ProductCreate(external_id=str(uuid4()), title="Source evidence"),
+            session,
+            operator,
+            f"product-{uuid4()}",
+        )
+        body = SnapshotCreate(
+            price=Decimal("10.00"),
+            currency="BRL",
+            available=True,
+            collected_at=datetime(2026, 1, 1, tzinfo=UTC),
+            source_payload_hash=existing_hash,
+        )
+        snapshot = create_snapshot(product.id, body, session, operator, f"snapshot-{uuid4()}")
+        assert snapshot.source_payload_hash == existing_hash
+        snapshot_count = count(session, ProductSnapshot)
+        audit_count = count(session, AuditEvent)
+        record_count = count(session, IdempotencyRecord)
+
+        conflicting = body.model_copy(update={"source_payload_hash": new_hash, **updates})
+        with pytest.raises(DomainError) as conflict:
+            create_snapshot(
+                product.id,
+                conflicting,
+                session,
+                operator,
+                f"snapshot-conflict-{uuid4()}",
+            )
+        assert conflict.value.code == "source_payload_hash_conflict"
+        assert count(session, ProductSnapshot) == snapshot_count
+        assert count(session, AuditEvent) == audit_count
+        assert count(session, IdempotencyRecord) == record_count
+
+
+@pytest.mark.parametrize("source_hash", [None, "a" * 64])
+def test_snapshot_canonical_dedupe_preserves_optional_source_hash(
+    source_hash: str | None,
+) -> None:
+    operator = create_operator()
+    with SessionFactory() as session:
+        product = create_product(
+            ProductCreate(external_id=str(uuid4()), title="Canonical evidence"),
+            session,
+            operator,
+            f"product-{uuid4()}",
+        )
+        body = SnapshotCreate(
+            price=Decimal("10.00"),
+            currency="BRL",
+            available=True,
+            collected_at=datetime(2026, 1, 1, tzinfo=UTC),
+            source_payload_hash=source_hash,
+        )
+        first = create_snapshot(product.id, body, session, operator, f"snapshot-{uuid4()}")
+        snapshot_count = count(session, ProductSnapshot)
+        second = create_snapshot(product.id, body, session, operator, f"snapshot-{uuid4()}")
+        assert second.id == first.id
+        assert second.source_payload_hash == source_hash
+        assert count(session, ProductSnapshot) == snapshot_count
 
 
 def test_assessment_parent_is_part_of_idempotency_context() -> None:
@@ -435,17 +518,63 @@ def csv_upload(
     external_id: str,
     title: str = "Official product",
     collected_at: str | None = None,
+    source_payload_hash: str | None = None,
+    price: str = "10.00",
 ) -> UploadFile:
     collected_at = collected_at or datetime.now(UTC).isoformat()
+    hash_header = ",source_payload_hash" if source_payload_hash is not None else ""
+    hash_value = f",{source_payload_hash}" if source_payload_hash is not None else ""
     payload = (
-        "external_id,title,price,currency,available,collected_at\n"
-        f"{external_id},{title},10.00,BRL,true,{collected_at}\n"
+        f"external_id,title,price,currency,available,collected_at{hash_header}\n"
+        f"{external_id},{title},{price},BRL,true,{collected_at}{hash_value}\n"
     ).encode()
     return UploadFile(
         BytesIO(payload),
         filename="official.csv",
         headers=Headers({"content-type": "text/csv"}),
     )
+
+
+def test_official_csv_uses_canonical_identity_and_source_hash_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = create_operator()
+    monkeypatch.setattr(process_import_task, "delay", lambda *args: None)
+    external_id = str(uuid4())
+    collected_at = datetime(2026, 1, 1, tzinfo=UTC).isoformat()
+    with SessionFactory() as session:
+
+        def import_and_process(source_hash: str, *, price: str = "10.00") -> ImportBatch:
+            batch = official_import(
+                session,
+                operator,
+                f"official-{uuid4()}",
+                csv_upload(
+                    external_id,
+                    collected_at=collected_at,
+                    source_payload_hash=source_hash,
+                    price=price,
+                ),
+            )
+            process_batch(session, batch.id)
+            session.flush()
+            return batch
+
+        accepted = import_and_process("a" * 64)
+        assert accepted.accepted_rows == 1
+        snapshot_count = count(session, ProductSnapshot)
+
+        duplicate = import_and_process("a" * 64)
+        assert duplicate.duplicate_rows == 1
+        assert count(session, ProductSnapshot) == snapshot_count
+
+        different_hash = import_and_process("b" * 64)
+        assert different_hash.rejected_rows == 1
+        assert count(session, ProductSnapshot) == snapshot_count
+
+        different_identity = import_and_process("a" * 64, price="11.00")
+        assert different_identity.rejected_rows == 1
+        assert count(session, ProductSnapshot) == snapshot_count
 
 
 def test_manual_official_and_cancel_import_replays_are_context_scoped(
