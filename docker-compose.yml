@@ -133,6 +133,29 @@ services:
     mem_limit: 512m
     cpus: 0.50
 
+  scheduler:
+    <<: *app-common
+    command: ["celery", "-A", "shopee_affiliate_agent.worker:celery_app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule", "--pidfile=/tmp/celerybeat.pid"]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid)"]
+      interval: 15s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    mem_limit: 128m
+    cpus: 0.10
+
   test:
     build:
       context: .

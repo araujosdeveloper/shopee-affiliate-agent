@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shopee-affiliate-agent"
-version = "0.1.0"
-description = "Deterministic foundation for compliant affiliate content operations"
+version = "0.2.0"
+description = "Controlled ingestion and deterministic commercial intelligence"
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
   "fastapi==0.141.1",
   "psycopg[binary]==3.2.10",
   "pydantic-settings==2.10.1",
+  "python-multipart==0.0.31",
   "python-json-logger==3.3.0",
   "redis==5.2.1",
   "starlette==1.6.0",
