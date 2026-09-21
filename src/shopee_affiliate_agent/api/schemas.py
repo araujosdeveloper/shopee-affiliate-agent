@@ -21,7 +21,7 @@ class ORMModel(BaseModel):
 
 
 class ProductCreate(BaseModel):
-    source: ProductSource
+    model_config = ConfigDict(extra="forbid")
     external_id: str = Field(min_length=1, max_length=255)
     title: str = Field(min_length=1, max_length=500)
     canonical_url: str | None = None

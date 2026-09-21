@@ -68,6 +68,13 @@ class ImportRowStatus(StrEnum):
     DUPLICATE = "duplicate"
 
 
+class OutboxStatus(StrEnum):
+    PENDING = "pending"
+    PUBLISHED = "published"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class OpportunityStatus(StrEnum):
     CANDIDATE = "candidate"
     SHORTLISTED = "shortlisted"

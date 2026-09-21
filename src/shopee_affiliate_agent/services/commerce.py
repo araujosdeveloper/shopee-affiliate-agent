@@ -121,7 +121,8 @@ def generate_opportunity(session: Session, score: ProductScore, key: str) -> Pro
         raise DomainError("unsupported_source", "snapshot provenance does not match product")
     if snapshot.collected_at > now:
         raise DomainError("future_snapshot", "snapshot is in the future")
-    if snapshot.collected_at < now - SNAPSHOT_MAX_AGE:
+    expires_at = snapshot.collected_at + SNAPSHOT_MAX_AGE
+    if expires_at <= now:
         raise DomainError("stale_snapshot", "snapshot is stale")
     if score.total_score < OPPORTUNITY_THRESHOLD:
         raise DomainError("score_below_threshold", "score must be at least 70.00")
@@ -133,7 +134,7 @@ def generate_opportunity(session: Session, score: ProductScore, key: str) -> Pro
         score=score.total_score,
         reason_codes=[OPPORTUNITY_POLICY_VERSION, "score_at_or_above_70"],
         generated_at=now,
-        expires_at=now + SNAPSHOT_MAX_AGE,
+        expires_at=expires_at,
         idempotency_key=key,
     )
     session.add(opportunity)

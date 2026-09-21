@@ -39,6 +39,7 @@ from shopee_affiliate_agent.domain.enums import (
     ImportRowStatus,
     OperatorRole,
     OpportunityStatus,
+    OutboxStatus,
     ProductSource,
     PublicationStatus,
 )
@@ -340,6 +341,39 @@ class ImportRow(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("product_snapshots.id", ondelete="RESTRICT"), nullable=True
     )
     row_sha256: Mapped[str] = mapped_column(String(64))
+
+
+class IdempotencyRecord(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "idempotency_records"
+    __table_args__ = (UniqueConstraint("idempotency_key"),)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    operation: Mapped[str] = mapped_column(String(120))
+    entity_type: Mapped[str] = mapped_column(String(80))
+    entity_id: Mapped[UUID] = mapped_column(nullable=False)
+    actor_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("operators.id", ondelete="RESTRICT"), nullable=True
+    )
+    payload_fingerprint: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ImportOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "import_outbox"
+    __table_args__ = (UniqueConstraint("import_batch_id", "task_name"),)
+    import_batch_id: Mapped[UUID] = mapped_column(
+        ForeignKey("import_batches.id", ondelete="RESTRICT")
+    )
+    task_name: Mapped[str] = mapped_column(String(120))
+    status: Mapped[OutboxStatus] = mapped_column(
+        Enum(
+            OutboxStatus, name="outbox_status", values_callable=lambda enum: [e.value for e in enum]
+        )
+    )
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
 class ProductAssessment(UUIDPrimaryKeyMixin, Base):

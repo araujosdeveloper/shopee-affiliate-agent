@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from shopee_affiliate_agent.domain.enums import ProductSource
 
 SPACE_PATTERN = re.compile(r"\s+")
+SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 TWOPLACES = Decimal("0.01")
 
 
@@ -95,6 +96,11 @@ def normalize_product(
             raise NormalizationError(
                 "validation_error", "canonical_url must be HTTPS without credentials"
             )
+    source_hash = normalize_text(data.get("source_payload_hash"), "source_payload_hash")
+    if source_hash and not SHA256_PATTERN.fullmatch(source_hash):
+        raise NormalizationError(
+            "validation_error", "source_payload_hash must be a 64-character SHA-256 hex digest"
+        )
     return NormalizedProduct(
         external_id=external_id or "",
         title=title or "",
@@ -105,7 +111,7 @@ def normalize_product(
         source=source,
         canonical_url=url,
         category=normalize_text(data.get("category"), "category"),
-        source_payload_hash=normalize_text(data.get("source_payload_hash"), "source_payload_hash"),
+        source_payload_hash=source_hash.lower() if source_hash else None,
     )
 
 

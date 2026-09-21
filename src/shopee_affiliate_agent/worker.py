@@ -1,5 +1,6 @@
 from uuid import UUID
 
+import kombu.exceptions  # type: ignore[import-untyped]
 from celery import Celery, Task
 from celery.schedules import crontab
 from sqlalchemy.exc import OperationalError
@@ -21,12 +22,22 @@ celery_app.conf.update(
     task_time_limit=120,
     task_soft_time_limit=110,
     task_default_retry_delay=5,
-    task_publish_retry=False,
+    task_publish_retry=True,
+    task_publish_retry_policy={
+        "max_retries": 4,
+        "interval_start": 0,
+        "interval_step": 1,
+        "interval_max": 5,
+    },
     beat_schedule={
         "expire-opportunities-every-15-minutes": {
             "task": "phase2.expire_opportunities",
             "schedule": crontab(minute="*/15"),
-        }
+        },
+        "dispatch-import-outbox-every-10-seconds": {
+            "task": "phase2.dispatch_import_outbox",
+            "schedule": 10.0,
+        },
     },
 )
 
@@ -108,6 +119,89 @@ def process_import_task(self: object, batch_id: str) -> None:
 
     with SessionFactory.begin() as session:
         process_batch(session, UUID(batch_id))
+
+
+@celery_app.task(name="phase2.dispatch_import_outbox")  # type: ignore[misc]
+def dispatch_import_outbox_task() -> int:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from shopee_affiliate_agent.db.models import ImportOutbox, OperationalAlert
+    from shopee_affiliate_agent.db.session import SessionFactory
+    from shopee_affiliate_agent.domain.enums import (
+        AlertSeverity,
+        AlertStatus,
+        AlertType,
+        OutboxStatus,
+    )
+    from shopee_affiliate_agent.services.commerce import audit
+
+    published = 0
+    with SessionFactory.begin() as session:
+        items = session.scalars(
+            select(ImportOutbox)
+            .where(
+                ImportOutbox.status.in_(
+                    [OutboxStatus.PENDING, OutboxStatus.PUBLISHED, OutboxStatus.FAILED]
+                ),
+                ImportOutbox.next_attempt_at <= datetime.now(UTC),
+                ImportOutbox.attempts < 5,
+            )
+            .with_for_update(skip_locked=True)
+            .limit(20)
+        ).all()
+        for item in items:
+            item.attempts += 1
+            try:
+                process_import_task.apply_async(args=[str(item.import_batch_id)])
+            except (ConnectionError, OSError, kombu.exceptions.OperationalError):
+                item.status = OutboxStatus.FAILED
+                item.last_error_code = "broker_unavailable"
+                item.next_attempt_at = datetime.now(UTC) + timedelta(
+                    seconds=min(60, 2**item.attempts)
+                )
+                if item.attempts >= 5:
+                    alert = OperationalAlert(
+                        alert_type=AlertType.IMPORT_FAILED,
+                        severity=AlertSeverity.CRITICAL,
+                        entity_type="import_batch",
+                        entity_id=item.import_batch_id,
+                        message="Import dispatch retry limit exceeded",
+                        status=AlertStatus.OPEN,
+                        detected_at=datetime.now(UTC),
+                        idempotency_key=f"outbox-exhausted:{item.import_batch_id}",
+                    )
+                    session.add(alert)
+                    session.flush()
+                    audit(
+                        session,
+                        "alert.opened",
+                        "operational_alert",
+                        alert.id,
+                        f"audit:alert:{alert.id}",
+                    )
+                audit(
+                    session,
+                    "import.outbox_failed",
+                    "import_outbox",
+                    item.id,
+                    f"audit:outbox:failed:{item.id}:{item.attempts}",
+                )
+            else:
+                item.status = OutboxStatus.PUBLISHED
+                item.published_at = datetime.now(UTC)
+                item.next_attempt_at = datetime.now(UTC) + timedelta(minutes=5)
+                item.last_error_code = None
+                audit(
+                    session,
+                    "import.outbox_published",
+                    "import_outbox",
+                    item.id,
+                    f"audit:outbox:published:{item.id}:{item.attempts}",
+                )
+                published += 1
+    return published
 
 
 @celery_app.task(name="phase2.expire_opportunities")  # type: ignore[misc]

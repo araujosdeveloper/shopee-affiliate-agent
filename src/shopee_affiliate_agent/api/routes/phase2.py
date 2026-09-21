@@ -1,9 +1,10 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID
 
+import kombu.exceptions  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import asc, desc, select
 from sqlalchemy.orm import Session
@@ -27,8 +28,8 @@ from shopee_affiliate_agent.api.schemas import (
     VersionAction,
 )
 from shopee_affiliate_agent.db.models import (
-    AuditEvent,
     ImportBatch,
+    ImportOutbox,
     ImportRow,
     OperationalAlert,
     Product,
@@ -42,11 +43,18 @@ from shopee_affiliate_agent.domain.enums import (
     AlertStatus,
     ImportBatchStatus,
     OpportunityStatus,
+    OutboxStatus,
     ProductSource,
 )
 from shopee_affiliate_agent.services.commerce import audit, calculate_score, generate_opportunity
+from shopee_affiliate_agent.services.idempotency import record, replay
 from shopee_affiliate_agent.services.imports import ImportFileError, ParsedRow, parse_official_csv
-from shopee_affiliate_agent.services.ingestion import add_rows, create_batch, process_batch
+from shopee_affiliate_agent.services.ingestion import (
+    add_rows,
+    create_batch,
+    enqueue_import,
+    process_batch,
+)
 from shopee_affiliate_agent.services.normalization import (
     canonical_data,
     canonical_sha256,
@@ -73,14 +81,21 @@ def page(limit: int, offset: int, items: list[Any]) -> dict[str, Any]:
 
 @router.post("/products", response_model=ProductOut, status_code=201)
 def create_product(body: ProductCreate, session: Db, operator: Operator, key: Key) -> Product:
-    replay = session.scalar(select(AuditEvent).where(AuditEvent.idempotency_key == f"audit:{key}"))
-    if replay:
-        if replay.event_type == "product.created" and replay.entity_id:
-            return found(session.get(Product, replay.entity_id), "product")
-        raise HTTPException(status_code=409, detail="idempotency_conflict")
+    payload = body.model_dump(mode="json")
+    prior = replay(
+        session,
+        key=key,
+        operation="product.create",
+        entity_type="product",
+        entity_id=None,
+        actor_id=operator,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(Product, prior.entity_id), "product")
     existing = session.scalar(
         select(Product).where(
-            Product.source == body.source, Product.external_id == body.external_id.strip()
+            Product.source == ProductSource.MANUAL, Product.external_id == body.external_id.strip()
         )
     )
     if existing:
@@ -93,10 +108,10 @@ def create_product(body: ProductCreate, session: Db, operator: Operator, key: Ke
             "available": True,
             "collected_at": datetime.now(UTC),
         },
-        body.source,
+        ProductSource.MANUAL,
     )
     product = Product(
-        source=body.source,
+        source=ProductSource.MANUAL,
         external_id=normalized.external_id,
         title=normalized.title,
         canonical_url=normalized.canonical_url,
@@ -105,6 +120,15 @@ def create_product(body: ProductCreate, session: Db, operator: Operator, key: Ke
     )
     session.add(product)
     session.flush()
+    record(
+        session,
+        key=key,
+        operation="product.create",
+        entity_type="product",
+        entity_id=product.id,
+        actor_id=operator,
+        payload=payload,
+    )
     audit(session, "product.created", "product", product.id, f"audit:{key}", operator)
     session.commit()
     session.refresh(product)
@@ -135,6 +159,18 @@ def get_product(product_id: UUID, session: Db) -> Product:
 def update_product(
     product_id: UUID, body: ProductUpdate, session: Db, operator: Operator, key: Key
 ) -> Product:
+    payload = body.model_dump(mode="json", exclude_unset=True)
+    prior = replay(
+        session,
+        key=key,
+        operation="product.update",
+        entity_type="product",
+        entity_id=product_id,
+        actor_id=operator,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(Product, prior.entity_id), "product")
     product: Product = found(session.get(Product, product_id), "product")
     if product.version != body.version:
         raise HTTPException(status_code=409, detail="stale_version")
@@ -158,6 +194,15 @@ def update_product(
         product.category = normalized.category
     if body.is_active is not None:
         product.is_active = body.is_active
+    record(
+        session,
+        key=key,
+        operation="product.update",
+        entity_type="product",
+        entity_id=product.id,
+        actor_id=operator,
+        payload=payload,
+    )
     audit(session, "product.updated", "product", product.id, f"audit:{key}", operator)
     session.commit()
     session.refresh(product)
@@ -168,7 +213,21 @@ def update_product(
 def create_snapshot(
     product_id: UUID, body: SnapshotCreate, session: Db, operator: Operator, key: Key
 ) -> ProductSnapshot:
+    payload = body.model_dump(mode="json")
+    prior = replay(
+        session,
+        key=key,
+        operation="snapshot.create",
+        entity_type="product_snapshot",
+        entity_id=None,
+        actor_id=operator,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(ProductSnapshot, prior.entity_id), "snapshot")
     product: Product = found(session.get(Product, product_id), "product")
+    if product.source != ProductSource.MANUAL:
+        raise HTTPException(status_code=409, detail="unsupported_source")
     normalized = normalize_product(
         {
             "external_id": product.external_id,
@@ -180,17 +239,22 @@ def create_snapshot(
         product.source,
     )
     digest = canonical_sha256(normalized)
-    existing = session.scalar(select(ProductSnapshot).where(ProductSnapshot.idempotency_key == key))
-    if existing:
-        if existing.source_payload_hash not in {digest, body.source_payload_hash}:
-            raise HTTPException(status_code=409, detail="idempotency_conflict")
-        return existing
     duplicate = session.scalar(
         select(ProductSnapshot).where(
             ProductSnapshot.source_payload_hash == digest, ProductSnapshot.product_id == product.id
         )
     )
     if duplicate:
+        record(
+            session,
+            key=key,
+            operation="snapshot.create",
+            entity_type="product_snapshot",
+            entity_id=duplicate.id,
+            actor_id=operator,
+            payload=payload,
+        )
+        session.commit()
         return duplicate
     snapshot = ProductSnapshot(
         product_id=product.id,
@@ -199,11 +263,20 @@ def create_snapshot(
         currency=normalized.currency,
         available=normalized.available,
         collected_at=normalized.collected_at,
-        source_payload_hash=digest,
+        source_payload_hash=normalized.source_payload_hash or digest,
         idempotency_key=key,
     )
     session.add(snapshot)
     session.flush()
+    record(
+        session,
+        key=key,
+        operation="snapshot.create",
+        entity_type="product_snapshot",
+        entity_id=snapshot.id,
+        actor_id=operator,
+        payload=payload,
+    )
     audit(session, "snapshot.created", "product_snapshot", snapshot.id, f"audit:{key}", operator)
     session.commit()
     session.refresh(snapshot)
@@ -232,8 +305,18 @@ def list_snapshots(
 def manual_import(
     body: ManualImportCreate, session: Db, operator: Operator, key: Key
 ) -> ImportBatch:
-    if body.source != ProductSource.MANUAL:
-        raise HTTPException(status_code=422, detail="manual import requires manual source")
+    payload_model = body.model_dump(mode="json")
+    prior = replay(
+        session,
+        key=key,
+        operation="import.manual",
+        entity_type="import_batch",
+        entity_id=None,
+        actor_id=operator,
+        payload=payload_model,
+    )
+    if prior:
+        return found(session.get(ImportBatch, prior.entity_id), "import batch")
     normalized = normalize_product(body.model_dump(), ProductSource.MANUAL)
     canonical = canonical_data(normalized)
     payload = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
@@ -250,6 +333,15 @@ def manual_import(
         session,
         batch,
         [ParsedRow(1, {name: str(value) for name, value in body.model_dump().items()}, canonical)],
+    )
+    record(
+        session,
+        key=key,
+        operation="import.manual",
+        entity_type="import_batch",
+        entity_id=batch.id,
+        actor_id=operator,
+        payload=payload_model,
     )
     process_batch(session, batch.id)
     session.commit()
@@ -269,6 +361,17 @@ def official_import(
     except ImportFileError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc
     digest = payload_sha256(payload)
+    prior = replay(
+        session,
+        key=key,
+        operation="import.official",
+        entity_type="import_batch",
+        entity_id=None,
+        actor_id=operator,
+        payload={"sha256": digest},
+    )
+    if prior:
+        return found(session.get(ImportBatch, prior.entity_id), "import batch")
     batch = create_batch(
         session,
         source=ProductSource.OFFICIAL_IMPORT,
@@ -279,8 +382,21 @@ def official_import(
         key=key,
     )
     add_rows(session, batch, rows)
+    enqueue_import(session, batch)
+    record(
+        session,
+        key=key,
+        operation="import.official",
+        entity_type="import_batch",
+        entity_id=batch.id,
+        actor_id=operator,
+        payload={"sha256": digest},
+    )
     session.commit()
-    process_import_task.delay(str(batch.id))
+    try:
+        process_import_task.delay(str(batch.id))
+    except (ConnectionError, OSError, kombu.exceptions.OperationalError):
+        pass
     session.refresh(batch)
     return batch
 
@@ -332,6 +448,18 @@ def list_import_rows(
 def cancel_import(
     batch_id: UUID, action: VersionAction, session: Db, operator: Operator, key: Key
 ) -> ImportBatch:
+    payload = action.model_dump(mode="json")
+    prior = replay(
+        session,
+        key=key,
+        operation="import.cancel",
+        entity_type="import_batch",
+        entity_id=batch_id,
+        actor_id=operator,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(ImportBatch, prior.entity_id), "import batch")
     batch: ImportBatch = found(session.get(ImportBatch, batch_id), "import batch")
     if batch.version != action.version:
         raise HTTPException(status_code=409, detail="stale_version")
@@ -339,6 +467,19 @@ def cancel_import(
         raise HTTPException(status_code=409, detail="invalid_state_transition")
     batch.status = ImportBatchStatus.CANCELLED
     batch.completed_at = datetime.now(UTC)
+    outbox = session.scalar(select(ImportOutbox).where(ImportOutbox.import_batch_id == batch.id))
+    if outbox:
+        outbox.status = OutboxStatus.COMPLETED
+        outbox.completed_at = datetime.now(UTC)
+    record(
+        session,
+        key=key,
+        operation="import.cancel",
+        entity_type="import_batch",
+        entity_id=batch.id,
+        actor_id=operator,
+        payload=payload,
+    )
     audit(session, "import.cancelled", "import_batch", batch.id, f"audit:{key}", operator)
     session.commit()
     session.refresh(batch)
@@ -349,33 +490,24 @@ def cancel_import(
 def create_assessment(
     product_id: UUID, body: AssessmentCreate, session: Db, operator: Operator, key: Key
 ) -> ProductAssessment:
+    payload = body.model_dump(mode="json")
+    prior = replay(
+        session,
+        key=key,
+        operation="assessment.create",
+        entity_type="product_assessment",
+        entity_id=None,
+        actor_id=operator,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(ProductAssessment, prior.entity_id), "assessment")
     found(session.get(Product, product_id), "product")
     snapshot: ProductSnapshot = found(
         session.get(ProductSnapshot, body.product_snapshot_id), "snapshot"
     )
     if snapshot.product_id != product_id:
         raise HTTPException(status_code=409, detail="product_snapshot_mismatch")
-    existing = session.scalar(
-        select(ProductAssessment).where(ProductAssessment.idempotency_key == key)
-    )
-    if existing:
-        dimensions = (
-            "conversion_potential",
-            "net_commission",
-            "product_quality",
-            "price_stock_stability",
-            "niche_fit",
-            "video_demonstration_potential",
-            "cancellation_quality",
-        )
-        if (
-            existing.product_id != product_id
-            or existing.product_snapshot_id != body.product_snapshot_id
-            or existing.rule_version != body.rule_version
-            or any(getattr(existing, name) != getattr(body, name) for name in dimensions)
-        ):
-            raise HTTPException(status_code=409, detail="idempotency_conflict")
-        return existing
     values = body.model_dump()
     if any(
         values[name] < 0 or values[name] > 100
@@ -397,6 +529,15 @@ def create_assessment(
     )
     session.add(assessment)
     session.flush()
+    record(
+        session,
+        key=key,
+        operation="assessment.create",
+        entity_type="product_assessment",
+        entity_id=assessment.id,
+        actor_id=operator,
+        payload=payload,
+    )
     audit(
         session, "assessment.created", "product_assessment", assessment.id, f"audit:{key}", operator
     )
@@ -429,10 +570,31 @@ def list_assessments(
 
 @router.post("/assessments/{assessment_id}/score", response_model=ScoreOut, status_code=201)
 def score_assessment(assessment_id: UUID, session: Db, key: Key) -> ProductScore:
+    payload = {"assessment_id": str(assessment_id)}
+    prior = replay(
+        session,
+        key=key,
+        operation="score.calculate",
+        entity_type="product_score",
+        entity_id=None,
+        actor_id=None,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(ProductScore, prior.entity_id), "score")
     assessment: ProductAssessment = found(
         session.get(ProductAssessment, assessment_id), "assessment"
     )
     score = calculate_score(session, assessment, key)
+    record(
+        session,
+        key=key,
+        operation="score.calculate",
+        entity_type="product_score",
+        entity_id=score.id,
+        actor_id=None,
+        payload=payload,
+    )
     session.commit()
     session.refresh(score)
     return score
@@ -462,8 +624,29 @@ def list_scores(
 
 @router.post("/scores/{score_id}/opportunities", response_model=OpportunityOut, status_code=201)
 def create_opportunity(score_id: UUID, session: Db, key: Key) -> ProductOpportunity:
+    payload = {"score_id": str(score_id)}
+    prior = replay(
+        session,
+        key=key,
+        operation="opportunity.generate",
+        entity_type="product_opportunity",
+        entity_id=None,
+        actor_id=None,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(ProductOpportunity, prior.entity_id), "opportunity")
     score: ProductScore = found(session.get(ProductScore, score_id), "score")
     item = generate_opportunity(session, score, key)
+    record(
+        session,
+        key=key,
+        operation="opportunity.generate",
+        entity_type="product_opportunity",
+        entity_id=item.id,
+        actor_id=None,
+        payload=payload,
+    )
     session.commit()
     session.refresh(item)
     return item
@@ -554,8 +737,35 @@ def transition_opportunity(
 def shortlist(
     opportunity_id: UUID, action: VersionAction, session: Db, operator: Operator, key: Key
 ) -> ProductOpportunity:
+    payload = action.model_dump(mode="json")
+    prior = replay(
+        session,
+        key=key,
+        operation="opportunity.shortlist",
+        entity_type="product_opportunity",
+        entity_id=opportunity_id,
+        actor_id=operator,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(ProductOpportunity, prior.entity_id), "opportunity")
     item: ProductOpportunity = found(session.get(ProductOpportunity, opportunity_id), "opportunity")
+    product = found(session.get(Product, item.product_id), "product")
+    snapshot = found(session.get(ProductSnapshot, item.product_snapshot_id), "snapshot")
+    if not product.is_active or not snapshot.available:
+        raise HTTPException(status_code=409, detail="invalid_state_transition")
+    if snapshot.collected_at + timedelta(minutes=60) <= datetime.now(UTC):
+        raise HTTPException(status_code=409, detail="stale_snapshot")
     transition_opportunity(item, action.version, OpportunityStatus.SHORTLISTED)
+    record(
+        session,
+        key=key,
+        operation="opportunity.shortlist",
+        entity_type="product_opportunity",
+        entity_id=item.id,
+        actor_id=operator,
+        payload=payload,
+    )
     audit(
         session, "opportunity.shortlisted", "product_opportunity", item.id, f"audit:{key}", operator
     )
@@ -568,8 +778,29 @@ def shortlist(
 def dismiss(
     opportunity_id: UUID, action: DismissAction, session: Db, operator: Operator, key: Key
 ) -> ProductOpportunity:
+    payload = action.model_dump(mode="json")
+    prior = replay(
+        session,
+        key=key,
+        operation="opportunity.dismiss",
+        entity_type="product_opportunity",
+        entity_id=opportunity_id,
+        actor_id=operator,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(ProductOpportunity, prior.entity_id), "opportunity")
     item: ProductOpportunity = found(session.get(ProductOpportunity, opportunity_id), "opportunity")
     transition_opportunity(item, action.version, OpportunityStatus.DISMISSED, action.reason)
+    record(
+        session,
+        key=key,
+        operation="opportunity.dismiss",
+        entity_type="product_opportunity",
+        entity_id=item.id,
+        actor_id=operator,
+        payload=payload,
+    )
     audit(
         session, "opportunity.dismissed", "product_opportunity", item.id, f"audit:{key}", operator
     )
@@ -612,6 +843,19 @@ def transition_alert(
     session: Session,
     key: str,
 ) -> OperationalAlert:
+    operation = f"alert.{target.value}"
+    payload = {"version": expected_version}
+    prior = replay(
+        session,
+        key=key,
+        operation=operation,
+        entity_type="operational_alert",
+        entity_id=alert.id,
+        actor_id=operator,
+        payload=payload,
+    )
+    if prior:
+        return found(session.get(OperationalAlert, prior.entity_id), "alert")
     if alert.version != expected_version:
         raise HTTPException(status_code=409, detail="stale_version")
     allowed = alert.status == AlertStatus.OPEN or (
@@ -625,6 +869,15 @@ def transition_alert(
     alert.acknowledged_by_id = alert.acknowledged_by_id or operator
     if target == AlertStatus.RESOLVED:
         alert.resolved_at = now
+    record(
+        session,
+        key=key,
+        operation=operation,
+        entity_type="operational_alert",
+        entity_id=alert.id,
+        actor_id=operator,
+        payload=payload,
+    )
     audit(session, f"alert.{target.value}", "operational_alert", alert.id, f"audit:{key}", operator)
     session.commit()
     session.refresh(alert)

@@ -4,11 +4,13 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from shopee_affiliate_agent.db.models import (
     ImportBatch,
+    ImportOutbox,
     ImportRow,
     OperationalAlert,
     Product,
@@ -20,11 +22,16 @@ from shopee_affiliate_agent.domain.enums import (
     AlertType,
     ImportBatchStatus,
     ImportRowStatus,
+    OutboxStatus,
     ProductSource,
 )
 from shopee_affiliate_agent.services.commerce import DomainError, audit
 from shopee_affiliate_agent.services.imports import ParsedRow
-from shopee_affiliate_agent.services.normalization import canonical_sha256, normalize_product
+from shopee_affiliate_agent.services.normalization import (
+    NormalizationError,
+    canonical_sha256,
+    normalize_product,
+)
 
 
 def create_batch(
@@ -80,15 +87,56 @@ def add_rows(session: Session, batch: ImportBatch, rows: list[ParsedRow]) -> Non
     batch.total_rows = len(rows)
 
 
+def enqueue_import(session: Session, batch: ImportBatch) -> ImportOutbox:
+    existing = session.scalar(
+        select(ImportOutbox).where(
+            ImportOutbox.import_batch_id == batch.id,
+            ImportOutbox.task_name == "phase2.process_import",
+        )
+    )
+    if existing:
+        return existing
+    item = ImportOutbox(
+        import_batch_id=batch.id,
+        task_name="phase2.process_import",
+        status=OutboxStatus.PENDING,
+        attempts=0,
+        next_attempt_at=datetime.now(UTC),
+    )
+    session.add(item)
+    session.flush()
+    audit(
+        session,
+        "import.outbox_pending",
+        "import_outbox",
+        item.id,
+        f"audit:outbox:pending:{batch.id}",
+        batch.requested_by_id,
+    )
+    return item
+
+
 def process_batch(session: Session, batch_id: UUID) -> ImportBatch:
+    locked = session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": str(batch_id)}
+    )
+    if not locked:
+        raise DomainError("batch_locked", "import batch is already being processed")
     batch = session.get(ImportBatch, batch_id)
     if not batch:
         raise ValueError("batch not found")
     if batch.status in {
         ImportBatchStatus.COMPLETED,
         ImportBatchStatus.PARTIALLY_COMPLETED,
+        ImportBatchStatus.FAILED,
         ImportBatchStatus.CANCELLED,
     }:
+        outbox = session.scalar(
+            select(ImportOutbox).where(ImportOutbox.import_batch_id == batch.id)
+        )
+        if outbox and outbox.status != OutboxStatus.COMPLETED:
+            outbox.status = OutboxStatus.COMPLETED
+            outbox.completed_at = datetime.now(UTC)
         return batch
     now = datetime.now(UTC)
     batch.status = ImportBatchStatus.PROCESSING
@@ -110,66 +158,68 @@ def process_batch(session: Session, batch_id: UUID) -> ImportBatch:
         if row.status != ImportRowStatus.PENDING:
             continue
         try:
-            product_data: dict[str, Any] = row.normalized_data or {}
-            normalized = normalize_product(product_data, batch.source)
-            product = session.scalar(
-                select(Product).where(
-                    Product.source == batch.source, Product.external_id == normalized.external_id
+            with session.begin_nested():
+                product_data: dict[str, Any] = row.normalized_data or {}
+                normalized = normalize_product(product_data, batch.source)
+                product = session.scalar(
+                    select(Product).where(
+                        Product.source == batch.source,
+                        Product.external_id == normalized.external_id,
+                    )
                 )
-            )
-            if not product:
-                product = Product(
-                    source=batch.source,
-                    external_id=normalized.external_id,
-                    title=normalized.title,
-                    canonical_url=normalized.canonical_url,
-                    category=normalized.category,
-                    is_active=True,
+                if not product:
+                    product = Product(
+                        source=batch.source,
+                        external_id=normalized.external_id,
+                        title=normalized.title,
+                        canonical_url=normalized.canonical_url,
+                        category=normalized.category,
+                        is_active=True,
+                    )
+                    session.add(product)
+                    session.flush()
+                    audit(
+                        session,
+                        "product.created",
+                        "product",
+                        product.id,
+                        f"audit:product:{batch.id}:{row.row_number}",
+                        batch.requested_by_id,
+                    )
+                digest = canonical_sha256(normalized)
+                snapshot_key = f"canonical:{digest}"
+                snapshot = session.scalar(
+                    select(ProductSnapshot).where(ProductSnapshot.idempotency_key == snapshot_key)
                 )
-                session.add(product)
-                session.flush()
-                audit(
-                    session,
-                    "product.created",
-                    "product",
-                    product.id,
-                    f"audit:product:{batch.id}:{row.row_number}",
-                    batch.requested_by_id,
-                )
-            digest = canonical_sha256(normalized)
-            snapshot_key = f"canonical:{digest}"
-            snapshot = session.scalar(
-                select(ProductSnapshot).where(ProductSnapshot.idempotency_key == snapshot_key)
-            )
-            if snapshot:
-                row.status = ImportRowStatus.DUPLICATE
-            else:
-                snapshot = ProductSnapshot(
-                    product_id=product.id,
-                    source=batch.source,
-                    price=normalized.price,
-                    currency=normalized.currency,
-                    available=normalized.available,
-                    collected_at=normalized.collected_at,
-                    source_payload_hash=normalized.source_payload_hash or digest,
-                    idempotency_key=snapshot_key,
-                )
-                session.add(snapshot)
-                session.flush()
-                row.status = ImportRowStatus.ACCEPTED
-                audit(
-                    session,
-                    "snapshot.created",
-                    "product_snapshot",
-                    snapshot.id,
-                    f"audit:snapshot:{snapshot.id}",
-                    batch.requested_by_id,
-                )
-            row.product_id = product.id
-            row.product_snapshot_id = snapshot.id
-        except Exception:
+                if snapshot:
+                    row.status = ImportRowStatus.DUPLICATE
+                else:
+                    snapshot = ProductSnapshot(
+                        product_id=product.id,
+                        source=batch.source,
+                        price=normalized.price,
+                        currency=normalized.currency,
+                        available=normalized.available,
+                        collected_at=normalized.collected_at,
+                        source_payload_hash=normalized.source_payload_hash or digest,
+                        idempotency_key=snapshot_key,
+                    )
+                    session.add(snapshot)
+                    session.flush()
+                    row.status = ImportRowStatus.ACCEPTED
+                    audit(
+                        session,
+                        "snapshot.created",
+                        "product_snapshot",
+                        snapshot.id,
+                        f"audit:snapshot:{snapshot.id}",
+                        batch.requested_by_id,
+                    )
+                row.product_id = product.id
+                row.product_snapshot_id = snapshot.id
+        except (NormalizationError, IntegrityError, SQLAlchemyError):
             row.status = ImportRowStatus.REJECTED
-            row.error_code = "validation_error"
+            row.error_code = "row_processing_error"
             row.error_message = "Row could not be processed"
             audit(
                 session,
@@ -226,4 +276,17 @@ def process_batch(session: Session, batch_id: UUID) -> ImportBatch:
             alert.id,
             f"audit:alert:{alert.id}",
         )
+    outbox = session.scalar(select(ImportOutbox).where(ImportOutbox.import_batch_id == batch.id))
+    if outbox:
+        if outbox.status != OutboxStatus.COMPLETED:
+            outbox.status = OutboxStatus.COMPLETED
+            outbox.completed_at = datetime.now(UTC)
+            audit(
+                session,
+                "import.outbox_completed",
+                "import_outbox",
+                outbox.id,
+                f"audit:outbox:completed:{batch.id}",
+                batch.requested_by_id,
+            )
     return batch
